@@ -143,6 +143,9 @@ def load_run(restic: Restic, run_id: str = "latest") -> RunManifest:
             "no backup run found" if run_id == "latest" else f"run {run_id} not found",
             hint="list the available runs with `drkit runs list`",
         )
-    snapshot = snapshots[-1]
-    found = snapshot.tag_value("run") or run_id
-    return RunManifest.from_json(restic.dump(snapshot.id, f"/{manifest_filename(found)}"))
+    return load_manifest(restic, RunSummary.from_snapshot(snapshots[-1]))
+
+
+def load_manifest(restic: Restic, run: RunSummary) -> RunManifest:
+    """Download the manifest of a run already listed (one restic call)."""
+    return RunManifest.from_json(restic.dump(run.snapshot_id, f"/{manifest_filename(run.run_id)}"))

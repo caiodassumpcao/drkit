@@ -15,6 +15,7 @@ from drkit.config import LoadedConfig, Manifest
 from drkit.doctor import Category, Check, Status
 from drkit.errors import ConfigError, DrkitError
 from drkit.orchestrator import BackupReport, PruneReport, RetentionResult
+from drkit.report import StatusReport
 from drkit.runmanifest import ProjectState, RunManifest, RunSummary
 from drkit.sources.base import ItemResult
 from drkit.verify import DatabaseCheck, VerifyReport
@@ -350,20 +351,6 @@ class TestRuns:
         assert "No items." in out
 
 
-@pytest.mark.parametrize(
-    ("size", "text"),
-    [
-        (0, "0 B"),
-        (1023, "1023 B"),
-        (1536, "1.5 KiB"),
-        (5 * 1024**3, "5.0 GiB"),
-        (3 * 1024**4, "3.0 TiB"),
-    ],
-)
-def test_human_bytes(size: int, text: str) -> None:
-    assert cli._human_bytes(size) == text
-
-
 class TestVerify:
     REPORT = VerifyReport(
         run_id="20261029T030000Z-a1f3",
@@ -443,3 +430,36 @@ class TestPrune:
             "orphan_runs": ["20261027T030000Z-dead"],
             "forgotten_snapshots": 3,
         }
+
+
+class TestReport:
+    @pytest.fixture
+    def limits(self, monkeypatch: pytest.MonkeyPatch, loaded: list[Path]) -> list[int]:
+        limits: list[int] = []
+        status = StatusReport(
+            host="prod-01",
+            generated_at=T0,
+            runs=[],
+            last_success_run=None,
+            last_success_at=None,
+            last_verify=None,
+        )
+
+        def build_report(restic: object, *, limit: int) -> StatusReport:
+            limits.append(limit)
+            return status
+
+        monkeypatch.setattr(cli, "build_report", build_report)
+        return limits
+
+    def test_markdown(self, limits: list[int]) -> None:
+        code, out, _ = invoke("report", "-n", "3")
+        assert code == 0
+        assert out.startswith("# drkit report: prod-01")
+        assert limits == [3]
+
+    @pytest.mark.parametrize("args", [["--json", "report"], ["report", "--format", "json"]])
+    def test_json(self, limits: list[int], args: list[str]) -> None:
+        _, out, _ = invoke(*args)
+        assert json.loads(out)["host"] == "prod-01"
+        assert limits == [10]

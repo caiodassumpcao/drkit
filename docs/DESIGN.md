@@ -375,7 +375,7 @@ Drill fails (non-zero) on any mismatch.
 
 - Logs: structlog JSON (`event`, `run_id`, `item`, `duration_s`, `status`) to stderr → journald (human-readable on a TTY). stdout is reserved for command output, so `--json` stays machine-parseable. Every log value passes through the redactor.
 - `state.json`: last run/verify/drill status and timestamps.
-- `drkit report [--format md|json]`: last N runs, sizes, durations, current RPO, last verify, last drill RTO.
+- `drkit report [--format md|json] [--limit 10]`: last N runs (status, items, size, duration — read from their run manifests), current RPO (time since the last `ok` run, from the repository), last verify (from `state.json`), last drill RTO (from v1.0). Markdown by default, so it can be pasted into an issue or a status page.
 - Exit codes: `0` ok · `1` partial failure · `2` config error · `3` lock held · `4` missing dependency · `5` restore aborted. `doctor` reports the most important failure: config/permissions (`2`), then dependencies (`4`), then repository access (`1`).
 - Environment overrides (tests, unprivileged development): `DRKIT_CONFIG`, `DRKIT_STATE_DIR`, `DRKIT_LOCK_FILE`.
 
@@ -389,11 +389,11 @@ Drill fails (non-zero) on any mismatch.
 | `drkit init` | Initialize restic repository |
 | `drkit backup [--project p] [--only db,volume,...]` | Run a backup |
 | `drkit runs list [--limit n]` / `drkit runs show <id>` | List / inspect runs |
-| `drkit verify [--run id]` | Integrity + DB restore test |
+| `drkit verify [--run id] [--read-data-subset 5%]` | Integrity + DB restore test |
 | `drkit restore db\|project\|host ...` | Restore (see §7) |
 | `drkit drill --local` | DR drill |
 | `drkit prune` | Forget snapshots of runs without manifest older than 24 h, then `restic prune` (weekly) |
-| `drkit report` | Status report |
+| `drkit report [--format md\|json] [--limit n]` | Status report |
 | Global | `--config`, `--json` (machine output), `--verbose`, `--version` |
 
 ---

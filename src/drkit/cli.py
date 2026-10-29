@@ -7,6 +7,7 @@ import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -26,6 +27,8 @@ from drkit.config import (
 )
 from drkit.errors import DrkitError
 from drkit.orchestrator import SUPPORTED_KINDS, restic_for, run_backup, run_prune
+from drkit.report import DEFAULT_LIMIT as DEFAULT_REPORT_LIMIT
+from drkit.report import build_report, human_bytes, to_markdown
 from drkit.runmanifest import RunManifest, list_runs, load_run
 from drkit.runner import redact, redactor
 from drkit.verify import DEFAULT_READ_DATA_SUBSET, READ_DATA_SUBSET_RE, run_verify
@@ -319,6 +322,32 @@ def prune_command(ctx: typer.Context) -> None:
     console.print("[green]Repository pruned.[/green]")
 
 
+class ReportFormat(StrEnum):
+    md = "md"
+    json = "json"
+
+
+@app.command("report")
+@handle_errors
+def report_command(
+    ctx: typer.Context,
+    output_format: Annotated[
+        ReportFormat, typer.Option("--format", help="Markdown or JSON (same as --json).")
+    ] = ReportFormat.md,
+    limit: Annotated[int, typer.Option("--limit", "-n", min=1, help="Number of runs.")] = (
+        DEFAULT_REPORT_LIMIT
+    ),
+) -> None:
+    """Status report: recent runs, current RPO and the last verification."""
+    options: Options = ctx.obj
+    loaded = _load(options)
+    report = build_report(restic_for(loaded.manifest, dict(loaded.env)), limit=limit)
+    if options.json or output_format is ReportFormat.json:
+        _echo_json(report.to_dict())
+    else:
+        typer.echo(redact(to_markdown(report)), nl=False)
+
+
 runs_app = typer.Typer(help="Inspect backup runs.", no_args_is_help=True)
 app.add_typer(runs_app, name="runs")
 
@@ -384,7 +413,7 @@ def _render_run(run: RunManifest) -> None:
             _STATUS_STYLE[doctor.Status.OK if item.status == "ok" else doctor.Status.FAIL],
             escape(item.label),
             escape(engine),
-            _human_bytes(item.bytes) if item.status == "ok" else "",
+            human_bytes(item.bytes) if item.status == "ok" else "",
             f"{item.duration_s:.1f}s",
             escape(outcome),
         )
@@ -399,17 +428,6 @@ def _render_run(run: RunManifest) -> None:
 def _status(status: str) -> str:
     color = {"ok": "green", "partial": "yellow"}.get(status, "red")
     return f"[{color}]{escape(status)}[/{color}]"
-
-
-def _human_bytes(size: int) -> str:
-    if size < 1024:
-        return f"{size} B"
-    value = size / 1024
-    for unit in ("KiB", "MiB", "GiB"):
-        if value < 1024:
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} TiB"
 
 
 def main() -> None:

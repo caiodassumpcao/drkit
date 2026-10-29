@@ -37,3 +37,9 @@ def test_prune_forgets_old_orphans_and_keeps_runs(make_drkit: Any) -> None:
     assert "20261020T030000Z-dead" not in runs
     assert "now-0000" in runs
     assert len(runs) == 2
+
+    report = json.loads(drkit("--json", "report").stdout)
+    assert [run["status"] for run in report["runs"]] == ["ok"]
+    assert report["runs"][0]["bytes"] > 0
+    assert 0 <= report["rpo_s"] < 600
+    assert drkit("report").stdout.startswith(f"# drkit report: {HOST}")
