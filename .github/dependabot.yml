@@ -22,6 +22,15 @@ updates:
     directory: /tests/integration
     schedule:
       interval: weekly
+    # The database majors under test are deliberate (one per supported line); moving to a
+    # new major is a decision for a pull request of its own, not a routine update.
+    ignore:
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+      - dependency-name: mysql
+        update-types: ["version-update:semver-major"]
+      - dependency-name: mariadb
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: test
       include: scope
