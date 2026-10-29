@@ -16,7 +16,7 @@ class PostgresSource(DatabaseSource):
 
     def dump(self, ctx: BackupContext, container: str) -> dict[str, Any]:
         # Inside the official image, local socket connections are trusted: no password needed.
-        user = self.require_env(container, self.database.effective_user_env)
+        user = self.require_env(container, self.database.user_env_candidates)
         version = self.server_version(container, user)
         tags = self.tags(ctx)
 

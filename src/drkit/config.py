@@ -173,8 +173,13 @@ class Compose(_Model):
     files: list[RelativePath] = Field(min_length=1)
 
 
-DEFAULT_USER_ENV: Mapping[str, str] = {"postgres": "POSTGRES_USER", "mysql": "MYSQL_USER"}
-DEFAULT_PASSWORD_ENV = "MYSQL_PASSWORD"  # noqa: S105 - a variable name, not a password
+# Tried in order when user_env / password_env are not set: the official MariaDB image names
+# its variables MARIADB_* (the MYSQL_* names are deprecated aliases there).
+DEFAULT_USER_ENV: Mapping[str, tuple[str, ...]] = {
+    "postgres": ("POSTGRES_USER",),
+    "mysql": ("MYSQL_USER", "MARIADB_USER"),
+}
+DEFAULT_PASSWORD_ENV = ("MYSQL_PASSWORD", "MARIADB_PASSWORD")
 
 EnvVarName = Annotated[str, _matches(_ENV_KEY_RE, "an environment variable name")]
 
@@ -197,16 +202,16 @@ class Database(_Model):
         return self
 
     @property
-    def effective_user_env(self) -> str:
-        """Container env var holding the database user (engine default when unset)."""
-        return self.user_env or DEFAULT_USER_ENV[self.engine]
+    def user_env_candidates(self) -> tuple[str, ...]:
+        """Container env vars that may hold the database user, in lookup order."""
+        return (self.user_env,) if self.user_env else DEFAULT_USER_ENV[self.engine]
 
     @property
-    def effective_password_env(self) -> str | None:
-        """Container env var holding the password (mysql only; default MYSQL_PASSWORD)."""
+    def password_env_candidates(self) -> tuple[str, ...]:
+        """Container env vars that may hold the password, in lookup order (mysql only)."""
         if self.engine != "mysql":
-            return None
-        return self.password_env or DEFAULT_PASSWORD_ENV
+            return ()
+        return (self.password_env,) if self.password_env else DEFAULT_PASSWORD_ENV
 
 
 class Volume(_Model):

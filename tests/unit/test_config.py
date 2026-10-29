@@ -60,7 +60,7 @@ class TestModels:
         manifest = Manifest.model_validate(MINIMAL)
         shop = manifest.projects[0]
         assert shop.compose_project == "shop"
-        assert shop.databases[0].effective_user_env == "POSTGRES_USER"
+        assert shop.databases[0].user_env_candidates == ("POSTGRES_USER",)
         assert shop.volumes[0].consistency == "live"
         assert shop.healthchecks[0].expect_status == 200
         assert shop.healthchecks[0].timeout == 60
@@ -81,8 +81,8 @@ class TestModels:
             )
         )
         dbs = manifest.projects[0].databases
-        assert dbs[1].effective_user_env == "MYSQL_USER"
-        assert dbs[2].effective_user_env == "U"
+        assert dbs[1].user_env_candidates == ("MYSQL_USER", "MARIADB_USER")
+        assert dbs[2].user_env_candidates == ("U",)
 
     def test_password_env_defaults_and_override(self) -> None:
         manifest = Manifest.model_validate(
@@ -96,9 +96,9 @@ class TestModels:
             )
         )
         postgres, mysql_default, mysql_custom = manifest.projects[0].databases
-        assert postgres.effective_password_env is None
-        assert mysql_default.effective_password_env == "MYSQL_PASSWORD"
-        assert mysql_custom.effective_password_env == "P"
+        assert postgres.password_env_candidates == ()
+        assert mysql_default.password_env_candidates == ("MYSQL_PASSWORD", "MARIADB_PASSWORD")
+        assert mysql_custom.password_env_candidates == ("P",)
 
     def test_unknown_project_lookup(self) -> None:
         manifest = Manifest.model_validate(MINIMAL)

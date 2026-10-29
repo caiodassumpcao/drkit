@@ -82,11 +82,42 @@ def test_custom_credential_variables(ctx: BackupContext, host: FakeHost) -> None
     assert host.pipe_calls[0][2]["producer_env"] == {"MYSQL_PWD": "root-password"}
 
 
+def test_falls_back_to_mariadb_variables(ctx: BackupContext, host: FakeHost) -> None:
+    host.env = {"MARIADB_USER": "app", "MARIADB_PASSWORD": "maria-password"}
+    host.pipes = [(0, 0, summary("snap", 1))]
+    assert MysqlSource(PROJECT, DB).backup(ctx).status == "ok"
+    assert host.pipe_calls[0][0][7] == "app"  # mysqldump -u <user>
+    assert host.pipe_calls[0][2]["producer_env"] == {"MYSQL_PWD": "maria-password"}
+
+
+def test_mysql_variables_win_over_mariadb(ctx: BackupContext, host: FakeHost) -> None:
+    host.env = {
+        "MYSQL_USER": "app",
+        "MYSQL_PASSWORD": "mysql-password",
+        "MARIADB_USER": "other",
+        "MARIADB_PASSWORD": "maria-password",
+    }
+    host.pipes = [(0, 0, summary("snap", 1))]
+    MysqlSource(PROJECT, DB).backup(ctx)
+    assert host.pipe_calls[0][0][7] == "app"
+    assert host.pipe_calls[0][2]["producer_env"] == {"MYSQL_PWD": "mysql-password"}
+
+
 def test_missing_password_variable(ctx: BackupContext, host: FakeHost) -> None:
     host.env = {"MYSQL_USER": "app"}
     item = MysqlSource(PROJECT, DB).backup(ctx)
     assert item.status == "failed"
-    assert item.error == "environment variable MYSQL_PASSWORD is not set in the 'mysql' container"
+    assert item.error == (
+        "none of the environment variables MYSQL_PASSWORD, MARIADB_PASSWORD is set in the "
+        "'mysql' container"
+    )
+
+
+def test_explicit_variable_has_no_fallback(ctx: BackupContext, host: FakeHost) -> None:
+    host.env = {"MYSQL_USER": "app", "MARIADB_PASSWORD": "maria-password"}
+    db = Database(engine="mysql", service="mysql", database="legacy", password_env="DB_PW")
+    item = MysqlSource(PROJECT, db).backup(ctx)
+    assert item.error == "environment variable DB_PW is not set in the 'mysql' container"
 
 
 def test_failed_dump(ctx: BackupContext, host: FakeHost) -> None:

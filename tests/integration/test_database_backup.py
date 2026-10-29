@@ -15,14 +15,9 @@ pytestmark = pytest.mark.integration
 
 POSTGRES = {"engine": "postgres", "service": "db", "database": "shop"}
 MYSQL = {"engine": "mysql", "service": "mysql", "database": "legacy"}
-# The official MariaDB image names its variables MARIADB_*.
-MARIADB = {
-    "engine": "mysql",
-    "service": "mariadb",
-    "database": "blog",
-    "user_env": "MARIADB_USER",
-    "password_env": "MARIADB_PASSWORD",
-}
+# No user_env / password_env: the MARIADB_* variables of the official image are found by
+# the default fallback.
+MARIADB = {"engine": "mysql", "service": "mariadb", "database": "blog"}
 ALL_ENGINES = {"shop": [POSTGRES, MYSQL], "blog": [MARIADB]}
 
 

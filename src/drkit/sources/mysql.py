@@ -23,10 +23,8 @@ class MysqlSource(DatabaseSource):
     engine = "mysql"
 
     def dump(self, ctx: BackupContext, container: str) -> dict[str, Any]:
-        password_env = self.database.effective_password_env
-        assert password_env is not None  # noqa: S101 - always set for engine "mysql"
-        user = self.require_env(container, self.database.effective_user_env)
-        password = self.require_env(container, password_env)
+        user = self.require_env(container, self.database.user_env_candidates)
+        password = self.require_env(container, self.database.password_env_candidates)
         runner.redactor.add(password)
         # The password travels through drkit's environment to `docker exec -e MYSQL_PWD`:
         # it never appears on a command line, where any local user could read it.

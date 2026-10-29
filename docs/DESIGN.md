@@ -218,7 +218,7 @@ Validation rules (must have unit tests):
 - Errors name the file and the key path (`projects[0].databases[1].engine: ...`), report every problem at once and never echo input values.
 - `retention` needs at least one of `daily`/`weekly`/`monthly`; `tls.strategy: reissue` needs `email`; `notifications` needs at least one channel.
 - Database names (`databases[].database`) and volume names are unique within a project.
-- `password_env` is only valid for `engine: mysql`. User and password are read from the container environment (defaults: `POSTGRES_USER`; `MYSQL_USER` + `MYSQL_PASSWORD`), so credentials never have to be duplicated in the manifest. PostgreSQL dumps authenticate over the container's local socket and need no password.
+- `password_env` is only valid for `engine: mysql`. User and password are read from the container environment (defaults: `POSTGRES_USER`; `MYSQL_USER` + `MYSQL_PASSWORD`, falling back to `MARIADB_USER` + `MARIADB_PASSWORD` as set by the official MariaDB image; an explicit `user_env` / `password_env` disables the fallback), so credentials never have to be duplicated in the manifest. PostgreSQL dumps authenticate over the container's local socket and need no password.
 
 ---
 

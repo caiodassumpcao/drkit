@@ -54,14 +54,13 @@ projects:
       - engine: postgres              # postgres | mysql
         service: db                   # compose service name
         database: artes
-        user_env: POSTGRES_USER       # container env var with the DB user
-                                      # (default: POSTGRES_USER / MYSQL_USER)
+        user_env: POSTGRES_USER       # container env var with the DB user (default:
+                                      # POSTGRES_USER; mysql: MYSQL_USER, then MARIADB_USER)
       - engine: mysql
         service: mysql
         database: legacy
-        password_env: MYSQL_PASSWORD  # mysql only: container env var with the password (default)
-                                      # MariaDB images: user_env: MARIADB_USER,
-                                      # password_env: MARIADB_PASSWORD
+        password_env: MYSQL_PASSWORD  # mysql only: container env var with the password
+                                      # (default: MYSQL_PASSWORD, then MARIADB_PASSWORD)
         # verify_query: SELECT count(*) FROM users   # optional extra check for `drkit verify`
     volumes:
       - name: uploads                 # compose volume name (resolved via compose labels)
