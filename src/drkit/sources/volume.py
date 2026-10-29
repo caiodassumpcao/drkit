@@ -24,14 +24,14 @@ class VolumeSource(BaseSource):
 
     def __init__(self, project: Project, volume: Volume) -> None:
         super().__init__(project=project.name, name=volume.name)
-        self.compose_project = project.compose_project
+        self.config = project
         self.volume = volume
 
     def tag_labels(self) -> dict[str, str]:
         return {"volume": self.name}
 
     def run(self, ctx: BackupContext) -> dict[str, Any]:
-        volume = docker.compose_volume(self.compose_project, self.name)
+        volume = resolve(self.config, self.name)
         mountpoint = docker.volume_mountpoint(volume)
         # Checked before stopping anything: services must not go down for a backup that
         # cannot read the data anyway.
@@ -56,6 +56,40 @@ class VolumeSource(BaseSource):
                 ctx.restic.forget([stored.snapshot_id])
             raise
         return {"snapshot": stored.snapshot_id, "bytes": stored.bytes_processed}
+
+
+def resolve(project: Project, name: str, directory: Path | None = None) -> str:
+    """Docker name of volume ``name`` of ``project``.
+
+    Volumes are found by the labels Compose puts on the volumes it creates. External volumes
+    have none: when the lookup fails, the compose files (in ``directory``, by default the
+    project directory) tell whether that is why, so the error can say so.
+    """
+    try:
+        return docker.compose_volume(project.compose_project, name)
+    except DrkitError:
+        if name in _external_volumes(project, directory or project.path):
+            raise external_volume_error(project.name, name) from None
+        raise
+
+
+def external_volume_error(project: str, volume: str) -> DrkitError:
+    return DrkitError(
+        f"volume {volume!r} of project {project!r} is declared external in its compose files: "
+        "drkit only backs up and restores volumes that Compose creates",
+        hint="let Compose manage the volume (remove `external: true`), or remove it from "
+        "projects[].volumes and back up its data another way",
+    )
+
+
+def _external_volumes(project: Project, directory: Path) -> set[str]:
+    try:
+        config = docker.compose_config(
+            project.compose_project, project.compose_files(directory), directory
+        )
+    except DrkitError:
+        return set()  # no usable compose files: the original error says enough
+    return docker.external_volumes(config)
 
 
 def readable(path: str) -> bool:

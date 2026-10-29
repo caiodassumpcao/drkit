@@ -1,4 +1,6 @@
+import json
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -134,6 +136,42 @@ class TestVolumes:
             ["docker", "stop", "--time", "30", "aaa", "bbb"],
             ["docker", "start", "aaa", "bbb"],
         ]
+
+
+class TestCompose:
+    def test_args(self) -> None:
+        files = [Path("/srv/shop/compose.yaml"), Path("/srv/shop/compose.prod.yaml")]
+        assert docker.compose_args("shop", files, Path("/srv/shop")) == [
+            "docker",
+            "compose",
+            "--project-name",
+            "shop",
+            "--project-directory",
+            "/srv/shop",
+            "--file",
+            "/srv/shop/compose.yaml",
+            "--file",
+            "/srv/shop/compose.prod.yaml",
+        ]
+
+    def test_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        model = {"services": {"db": {}}, "volumes": {"data": {}, "shared": {"external": True}}}
+        calls = fake_run(monkeypatch, stdout=json.dumps(model))
+        config = docker.compose_config("shop", [Path("/srv/shop/compose.yaml")], Path("/srv/shop"))
+        assert config == model
+        assert calls[0][-3:] == ["config", "--format", "json"]
+        assert docker.external_volumes(config) == {"shared"}
+        assert docker.external_volumes({"volumes": {"data": None}}) == set()
+        assert docker.external_volumes({}) == set()
+
+    def test_invalid_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_run(monkeypatch, code=1, stderr="services.db additional property imagee not allowed")
+        with pytest.raises(DrkitError) as exc_info:
+            docker.compose_config("shop", [Path("/srv/shop/compose.yaml")], Path("/srv/shop"))
+        assert exc_info.value.message == (
+            "invalid compose configuration in /srv/shop: "
+            "services.db additional property imagee not allowed"
+        )
 
 
 class TestProjectImages:

@@ -60,6 +60,10 @@ class TestModels:
         manifest = Manifest.model_validate(MINIMAL)
         shop = manifest.projects[0]
         assert shop.compose_project == "shop"
+        assert shop.compose_files() == [shop.path / file for file in shop.compose.files]
+        assert shop.compose_files(Path("/restore")) == [
+            Path("/restore") / file for file in shop.compose.files
+        ]
         assert shop.databases[0].user_env_candidates == ("POSTGRES_USER",)
         assert shop.volumes[0].consistency == "live"
         assert shop.healthchecks[0].expect_status == 200

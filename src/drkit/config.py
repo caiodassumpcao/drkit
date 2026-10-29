@@ -246,6 +246,10 @@ class Project(_Model):
     def compose_project(self) -> str:
         return self.compose.project_name or self.name
 
+    def compose_files(self, directory: Path | None = None) -> list[Path]:
+        """Absolute compose file paths, in the project directory or in ``directory``."""
+        return [(directory or self.path) / file for file in self.compose.files]
+
     @model_validator(mode="after")
     def _unique_items(self) -> Self:
         _require_unique((d.database for d in self.databases), "databases[].database")

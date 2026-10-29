@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -180,6 +182,45 @@ def compose_volume(project: str, volume: str) -> str:
             "compose.project_name in the manifest (external volumes are not supported)",
         )
     return names[0]
+
+
+def compose_args(project: str, files: Sequence[Path], directory: Path) -> list[str]:
+    """argv prefix for ``docker compose`` on a project's own files.
+
+    With ``--project-directory``, relative paths and the ``.env`` file resolve as they do when
+    the operator runs compose from the project directory.
+    """
+    args = ["docker", "compose", "--project-name", project, "--project-directory", str(directory)]
+    for file in files:
+        args += ["--file", str(file)]
+    return args
+
+
+def compose_config(project: str, files: Sequence[Path], directory: Path) -> dict[str, Any]:
+    """The resolved compose model (``docker compose config``).
+
+    It holds interpolated values from ``.env``, secrets included: use it, never print it.
+    """
+    result = runner.run(
+        [*compose_args(project, files, directory), "config", "--format", "json"],
+        timeout=COMMAND_TIMEOUT_S,
+        check=False,
+    )
+    if not result.ok:
+        raise DrkitError(
+            f"invalid compose configuration in {directory}: "
+            f"{runner.failure_detail(result, max_lines=2)}",
+            hint="check projects[].compose.files and the project's .env file "
+            f"(`docker compose -p {project} config`)",
+        )
+    config: dict[str, Any] = json.loads(result.stdout)
+    return config
+
+
+def external_volumes(config: Mapping[str, Any]) -> set[str]:
+    """Names of the volumes a compose model declares ``external``."""
+    volumes: Mapping[str, Any] = config.get("volumes") or {}
+    return {name for name, spec in volumes.items() if (spec or {}).get("external")}
 
 
 def volume_mountpoint(name: str) -> str:

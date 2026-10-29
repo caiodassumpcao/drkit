@@ -151,3 +151,47 @@ def test_restart_error_has_a_hint(fake_docker: FakeDocker) -> None:
         pass
     assert excinfo.value.hint is not None
     assert "docker compose up -d" in excinfo.value.hint
+
+
+class TestExternalVolumes:
+    @pytest.fixture
+    def missing(self, monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+        def compose_volume(project: str, volume: str) -> str:
+            raise DrkitError(f"volume {volume!r} of compose project {project!r} not found")
+
+        directories: list[Path] = []
+
+        def compose_config(project: str, files: Sequence[Path], directory: Path) -> object:
+            directories.append(directory)
+            return {"volumes": {"uploads": {"external": True, "name": "uploads"}}}
+
+        monkeypatch.setattr(docker, "compose_volume", compose_volume)
+        monkeypatch.setattr(docker, "compose_config", compose_config)
+        return directories
+
+    def test_backup_explains_external_volumes(self, missing: list[Path]) -> None:
+        _, item = backup("live", FakeRestic([]))
+        assert item.status == "failed"
+        assert item.error == (
+            "volume 'uploads' of project 'shop' is declared external in its compose files: "
+            "drkit only backs up and restores volumes that Compose creates"
+        )
+        assert missing == [Path("/srv/shop")]
+
+    def test_lookup_in_another_directory(self, missing: list[Path]) -> None:
+        with pytest.raises(DrkitError, match="declared external"):
+            volume_module.resolve(PROJECT, "uploads", Path("/restore/shop"))
+        assert missing == [Path("/restore/shop")]
+
+    def test_other_lookup_failures_are_kept(
+        self, missing: list[Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def no_config(project: str, files: Sequence[Path], directory: Path) -> object:
+            raise DrkitError("invalid compose configuration")
+
+        monkeypatch.setattr(docker, "compose_config", no_config)
+        with pytest.raises(DrkitError, match="volume 'uploads' of compose project 'shop-prod'"):
+            volume_module.resolve(PROJECT, "uploads")
+        monkeypatch.setattr(docker, "compose_config", lambda *args: {"volumes": {"uploads": {}}})
+        with pytest.raises(DrkitError, match="not found"):
+            volume_module.resolve(PROJECT, "uploads")
