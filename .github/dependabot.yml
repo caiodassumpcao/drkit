@@ -17,3 +17,11 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci
+
+  - package-ecosystem: docker-compose
+    directory: /tests/integration
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: test
+      include: scope
