@@ -6,8 +6,9 @@ import pytest
 
 from drkit import notify, runner
 from drkit.config import Notifications
+from tests.samples import TELEGRAM_TOKEN
 
-TOKEN = "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1"
+TOKEN = TELEGRAM_TOKEN
 WEBHOOK = "https://hooks.example.com/services/T0/B0/very-secret"
 
 

@@ -6,6 +6,7 @@ import pytest
 from drkit import runner
 from drkit.errors import CommandError, CommandTimeoutError, MissingDependencyError
 from drkit.runner import REDACTED, Redactor
+from tests.samples import TELEGRAM_TOKEN
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +48,7 @@ class TestRedactor:
             ("db_password = x", f"db_password = {REDACTED}"),
             ("s3:https://user:pa55@minio:9000/b", f"s3:https://user:{REDACTED}@minio:9000/b"),
             (
-                "https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1/send",
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/send",
                 f"https://api.telegram.org/bot{REDACTED}/send",
             ),
             ("nothing to see here", "nothing to see here"),
