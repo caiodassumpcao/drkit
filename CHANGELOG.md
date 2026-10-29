@@ -7,6 +7,40 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-29
+
+Restores: a database in place, or a whole project rebuilt from a single run.
+
+### Added
+
+- **`drkit restore db <project>`.** Restores every database of the project, or one
+  (`--database`), optionally into another compose service (`--into`). The current database is
+  first dumped into a safety snapshot (`kind:pre-restore`, outside of any run, so retention and
+  prune never remove it) unless `--no-safety-backup`; PostgreSQL restores in a single
+  transaction, so a failed restore leaves the database unchanged; sanity queries follow.
+- **`drkit restore project <project>`.** Rebuilds a project in nine steps: clone the code at
+  the recorded commit and apply the patch of uncommitted changes, restore compose files and
+  secrets (mode `0600`, original owners), pull the recorded images by digest, start the
+  database services, restore databases (with PostgreSQL roles) and volumes, start the project,
+  run `post_restore` hooks and wait for the healthchecks. An existing project directory is
+  moved aside, never deleted. `--to-path` restores into another directory.
+- **Restore pipeline.** Every restore starts from a run manifest (`--run`, by default the newest
+  successful run that contains what is restored), prints a numbered plan (`--dry-run` stops
+  there), asks for confirmation (`--yes`), holds the run lock, times each step, stops at the
+  first failure with exit code `5` and the `--from-step` / `--run` to resume with, and saves a
+  JSON report in `$DRKIT_STATE_DIR/reports/`.
+- **Healthchecks** over HTTP, retried with exponential backoff until each check's timeout.
+- `drkit doctor` checks that each project's compose files exist and resolve, and that its git
+  remote is readable with the deploy key.
+- [Recovery runbook](docs/runbook.md) for database and project restores.
+
+### Changed
+
+- External volumes now fail backup, restore and `doctor` with an error that says they are not
+  supported and what to do, instead of a generic "volume not found".
+- Hook log events are named `hook.run` / `hook.failed` (were `backup.hook*`).
+- Dependabot no longer proposes new major versions of the database images under test.
+
 ## [0.2.0] - 2026-10-29
 
 Everything a server needs besides its databases, and proof that the database backups restore.
@@ -89,6 +123,7 @@ First release: database backups to any S3-compatible storage, with retention and
 - Annotated example manifest, CI (lint, types, unit tests, build, Gitleaks), Dependabot,
   issue and pull request templates, `SECURITY.md`, `CONTRIBUTING.md`, ADRs 0001–0003.
 
-[Unreleased]: https://github.com/caiodassumpcao/drkit/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/caiodassumpcao/drkit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/caiodassumpcao/drkit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/caiodassumpcao/drkit/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/caiodassumpcao/drkit/releases/tag/v0.1.0
