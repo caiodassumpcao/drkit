@@ -229,13 +229,13 @@ Validation rules (must have unit tests):
 1. Acquire lock (`/run/drkit.lock`, override with `$DRKIT_LOCK_FILE`; non-blocking → exit code 3 if held).
 2. Load + validate manifest, open the repository (`restic cat config`). If the run cannot start (repository missing or unreachable), a failure notification is sent and nothing is written.
 3. Generate `run_id`, start timers.
-4. For each project: `pre_backup` hooks.
-5. Back up items (one restic snapshot each, see §5.2). A failing item **does not abort** the run; it is recorded as failed.
-6. For each project: `post_backup` hooks (always run, even after failures, `finally` semantics).
+4. For each project, in manifest order: run its `pre_backup` hooks (`sh -c`, from the project directory, 30 min timeout each), back up its items, then run its `post_backup` hooks. Bracketing each project keeps one project's maintenance window (e.g. a paused queue) from covering the others' backups.
+5. Items: one restic snapshot each (see §5.2). A failing item **does not abort** the run; it is recorded as failed. A failed `pre_backup` hook skips the project's items (recorded as failed) and the remaining `pre_backup` hooks.
+6. `post_backup` hooks always run, even after failures (`finally` semantics); a failing one is reported as a run error (exit code `1`) without changing the item results. Host items (`system`) come last and have no hooks.
 7. Write run manifest as a `kind:meta` snapshot. If this fails the run is reported as failed: without its manifest it cannot be restored as a set.
 8. Retention **per run** (ADR-0004): the policy is evaluated with `restic forget --dry-run --group-by host` over the `kind:meta` snapshots; every snapshot of each discarded run (`--tag run:<id>`) is then forgotten. The current run is never discarded. No prune — prune is a separate weekly command.
 9. Update `state.json` (`$DRKIT_STATE_DIR`, default `/var/lib/drkit`), emit report, send notifications (`success` or `failure`, per `notifications.on`; delivery failures are logged, never change the exit code).
-10. Exit code: `0` all ok · `1` partial failure (an item failed, or retention / state update failed).
+10. Exit code: `0` all ok · `1` partial failure (an item failed, or a `post_backup` hook, retention or the state update failed).
 
 ### 5.2 Items
 

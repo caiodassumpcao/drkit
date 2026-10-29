@@ -5,13 +5,15 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from itertools import groupby
 from pathlib import Path
+from typing import Literal
 
 import httpx
 import structlog
 
-from drkit import __version__, lock, state
-from drkit.config import LoadedConfig, Manifest, Retention
+from drkit import __version__, lock, runner, state
+from drkit.config import LoadedConfig, Manifest, Project, Retention
 from drkit.errors import ConfigError, DrkitError, ExitCode
 from drkit.notify import notify
 from drkit.restic import Restic
@@ -34,6 +36,10 @@ from drkit.sources.system import SystemInventorySource
 from drkit.sources.volume import VolumeSource
 
 SUPPORTED_KINDS = ("db", "volume", "secrets", "project", "system")
+# Hooks may legitimately take a while (e.g. flushing a queue), but must never hang a run.
+HOOK_TIMEOUT_S = 1800.0
+
+HookStage = Literal["pre_backup", "post_backup"]
 
 log = structlog.get_logger(__name__)
 
@@ -124,7 +130,11 @@ def run_backup(
                 raise
 
             ctx = BackupContext(restic=repo, run_id=run_id, host=manifest.host)
-            items = [_backup_item(source, ctx) for source in sources]
+            items: list[ItemResult] = []
+            hook_errors: list[str] = []
+            for project_name, group in groupby(sources, key=lambda source: source.project):
+                owner = manifest.project(project_name) if project_name else None
+                items += _backup_project(list(group), owner, ctx, hook_errors)
             run = RunManifest(
                 run_id=run_id,
                 host=manifest.host,
@@ -152,7 +162,7 @@ def run_backup(
                 )
                 raise
 
-            report = BackupReport(manifest=run)
+            report = BackupReport(manifest=run, errors=hook_errors)
             try:
                 report.retention = apply_retention(repo, manifest.retention, protect=run_id)
             except DrkitError as exc:
@@ -206,6 +216,70 @@ def format_message(host: str, report: BackupReport) -> str:
     lines += [f"✗ {item.label}: {item.error}" for item in failed]
     lines += [f"✗ {error}" for error in report.errors]
     return "\n".join(lines)
+
+
+def _backup_project(
+    sources: list[Source], project: Project | None, ctx: BackupContext, errors: list[str]
+) -> list[ItemResult]:
+    """Back up the items of one project between its pre_backup and post_backup hooks.
+
+    A failed pre_backup hook skips the project's items (they are recorded as failed);
+    post_backup hooks always run, like a ``finally`` block. Host items have no hooks.
+    """
+    if project is None:
+        return [_backup_item(source, ctx) for source in sources]
+    try:
+        failure = run_hooks(project, "pre_backup", stop_on_failure=True)
+        if failure:
+            return [_skipped(source, f"skipped: {failure[0]}") for source in sources]
+        return [_backup_item(source, ctx) for source in sources]
+    finally:
+        errors += [f"{project.name}: {error}" for error in run_hooks(project, "post_backup")]
+
+
+def run_hooks(project: Project, stage: HookStage, *, stop_on_failure: bool = False) -> list[str]:
+    """Run the ``stage`` hooks of ``project`` with ``sh -c`` from its directory.
+
+    Returns one error message per failed hook. Hooks are trusted input: they come from the
+    manifest, which only its owner can write (DESIGN §9).
+    """
+    commands: list[str] = getattr(project.hooks, stage)
+    errors: list[str] = []
+    for command in commands:
+        error = _run_hook(project, stage, command)
+        if error is None:
+            continue
+        log.error("backup.hook_failed", project=project.name, stage=stage, error=error)
+        errors.append(error)
+        if stop_on_failure:
+            break
+    return errors
+
+
+def _run_hook(project: Project, stage: HookStage, command: str) -> str | None:
+    if not project.path.is_dir():
+        return f"{stage} hook not run: project directory {project.path} does not exist"
+    log.info("backup.hook", project=project.name, stage=stage)
+    try:
+        result = runner.run(
+            ["/bin/sh", "-c", command], timeout=HOOK_TIMEOUT_S, cwd=project.path, check=False
+        )
+    except DrkitError as exc:
+        return f"{stage} hook failed: {exc.message}"
+    if result.ok:
+        return None
+    detail = runner.failure_detail(result, max_lines=3)
+    return f"{stage} hook failed with exit code {result.returncode}: {redact(command)}" + (
+        f": {detail}" if detail else ""
+    )
+
+
+def _skipped(source: Source, reason: str) -> ItemResult:
+    item = ItemResult(
+        kind=source.kind, project=source.project, name=source.name, status="failed", error=reason
+    )
+    log.info("backup.item", item=item.label, status=item.status)
+    return item
 
 
 def _backup_item(source: Source, ctx: BackupContext) -> ItemResult:

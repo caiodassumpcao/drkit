@@ -12,6 +12,7 @@ import structlog
 from drkit import logging as drkit_logging
 from drkit import orchestrator, state
 from drkit.config import (
+    Hooks,
     LoadedConfig,
     Manifest,
     Repository,
@@ -251,7 +252,7 @@ class TestRunBackup:
         self, tmp_path: Path, webhook: Webhook, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         report = run(
-            tmp_path, MemoryRestic(), webhook, [FakeSource("s", "a", fail="x")], monkeypatch
+            tmp_path, MemoryRestic(), webhook, [FakeSource("shop", "a", fail="x")], monkeypatch
         )
         assert report.manifest.status == "failed"
         assert report.exit_code is ExitCode.PARTIAL_FAILURE
@@ -271,7 +272,7 @@ class TestRunBackup:
         restic = MemoryRestic()
         restic.fail_on = {"backup_bytes"}
         with pytest.raises(ConfigError, match="disk full"):
-            run(tmp_path, restic, webhook, [FakeSource("s", "a")], monkeypatch)
+            run(tmp_path, restic, webhook, [FakeSource("shop", "a")], monkeypatch)
         assert "cannot store run manifest: disk full" in webhook.messages[0]
 
     def test_retention_failure_is_reported_but_keeps_the_run(
@@ -279,7 +280,7 @@ class TestRunBackup:
     ) -> None:
         restic = MemoryRestic()
         restic.fail_on = {"retention"}
-        report = run(tmp_path, restic, webhook, [FakeSource("s", "a")], monkeypatch)
+        report = run(tmp_path, restic, webhook, [FakeSource("shop", "a")], monkeypatch)
         assert report.manifest.status == "ok"
         assert report.errors == ["retention: restic forget failed"]
         assert report.exit_code is ExitCode.PARTIAL_FAILURE
@@ -289,7 +290,7 @@ class TestRunBackup:
         self, tmp_path: Path, webhook: Webhook, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         (tmp_path / "state").write_text("not a directory")
-        report = run(tmp_path, MemoryRestic(), webhook, [FakeSource("s", "a")], monkeypatch)
+        report = run(tmp_path, MemoryRestic(), webhook, [FakeSource("shop", "a")], monkeypatch)
         assert report.errors[0].startswith("state: cannot ")
 
     def test_lock_is_held_during_the_run(
@@ -304,7 +305,7 @@ class TestRunBackup:
         stream = io.StringIO()
         drkit_logging.configure(json=True, stream=stream)
         try:
-            report = run(tmp_path, MemoryRestic(), webhook, [FakeSource("s", "a")], monkeypatch)
+            report = run(tmp_path, MemoryRestic(), webhook, [FakeSource("shop", "a")], monkeypatch)
         finally:
             structlog.reset_defaults()
         events = [json.loads(line) for line in stream.getvalue().splitlines()]
@@ -451,3 +452,111 @@ def test_format_message_success() -> None:
     assert orchestrator.format_message("h", BackupReport(run_manifest)) == (
         "drkit backup on h: OK\nrun r1 · 1 ok, 0 failed · 41s"
     )
+
+
+class TestHooks:
+    """Hooks run for real through /bin/sh, from the project directory."""
+
+    def manifest(self, tmp_path: Path, pre: list[str], post: list[str]) -> Manifest:
+        (tmp_path / "shop").mkdir(exist_ok=True)
+        shop = MANIFEST.projects[0].model_copy(
+            update={"path": tmp_path / "shop", "hooks": Hooks(pre_backup=pre, post_backup=post)}
+        )
+        return MANIFEST.model_copy(update={"projects": [shop, MANIFEST.projects[1]]})
+
+    def backup(
+        self, tmp_path: Path, manifest: Manifest, sources: list[FakeSource], webhook: Webhook
+    ) -> BackupReport:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(orchestrator, "build_sources", lambda *_a, **_k: sources)
+            return orchestrator.run_backup(
+                LoadedConfig(path=tmp_path / "dr.yaml", manifest=manifest),
+                restic=MemoryRestic(),
+                lock_path=tmp_path / "drkit.lock",
+                state_directory=tmp_path / "state",
+                http_client=httpx.Client(transport=httpx.MockTransport(webhook)),
+            )
+
+    def test_hooks_bracket_the_items_of_their_project(
+        self, tmp_path: Path, webhook: Webhook
+    ) -> None:
+        log = tmp_path / "shop" / "hooks.log"
+        manifest = self.manifest(
+            tmp_path,
+            pre=["echo pre1 >> hooks.log", "echo pre2 >> hooks.log"],
+            post=["echo post >> hooks.log"],
+        )
+        sources = [FakeSource("shop", "shop"), FakeSource("blog", "blog")]
+
+        report = self.backup(tmp_path, manifest, sources, webhook)
+
+        assert report.ok
+        assert log.read_text().split() == ["pre1", "pre2", "post"]
+
+    def test_failed_pre_hook_skips_items_but_runs_post_hooks(
+        self, tmp_path: Path, webhook: Webhook
+    ) -> None:
+        manifest = self.manifest(
+            tmp_path,
+            pre=["echo 'maintenance mode unavailable' >&2; exit 3", "touch never"],
+            post=["touch post-ran"],
+        )
+        sources = [FakeSource("shop", "shop"), FakeSource("blog", "blog")]
+
+        report = self.backup(tmp_path, manifest, sources, webhook)
+
+        shop, blog = report.manifest.items
+        assert shop.status == "failed"
+        assert shop.error == (
+            "skipped: pre_backup hook failed with exit code 3: "
+            "echo 'maintenance mode unavailable' >&2; exit 3: maintenance mode unavailable"
+        )
+        assert blog.status == "ok"
+        assert report.manifest.status == "partial"
+        assert not (tmp_path / "shop" / "never").exists()
+        assert (tmp_path / "shop" / "post-ran").exists()
+
+    def test_post_hook_failures_are_reported_and_all_run(
+        self, tmp_path: Path, webhook: Webhook
+    ) -> None:
+        manifest = self.manifest(tmp_path, pre=[], post=["exit 1", "touch second"])
+        report = self.backup(tmp_path, manifest, [FakeSource("shop", "shop")], webhook)
+        assert report.manifest.status == "ok"
+        assert report.errors == ["shop: post_backup hook failed with exit code 1: exit 1"]
+        assert report.exit_code is ExitCode.PARTIAL_FAILURE
+        assert (tmp_path / "shop" / "second").exists()
+        assert "✗ shop: post_backup hook failed" in webhook.messages[0]
+
+    def test_post_hooks_run_when_the_run_is_interrupted(
+        self, tmp_path: Path, webhook: Webhook
+    ) -> None:
+        class Interrupted(FakeSource):
+            def backup(self, ctx: BackupContext) -> ItemResult:
+                raise KeyboardInterrupt
+
+        manifest = self.manifest(tmp_path, pre=[], post=["touch post-ran"])
+        with pytest.raises(KeyboardInterrupt):
+            self.backup(tmp_path, manifest, [Interrupted("shop", "shop")], webhook)
+        assert (tmp_path / "shop" / "post-ran").exists()
+
+    def test_missing_project_directory(self, tmp_path: Path) -> None:
+        shop = MANIFEST.projects[0].model_copy(
+            update={"path": tmp_path / "gone", "hooks": Hooks(pre_backup=["true"])}
+        )
+        assert orchestrator.run_hooks(shop, "pre_backup") == [
+            f"pre_backup hook not run: project directory {tmp_path / 'gone'} does not exist"
+        ]
+
+    def test_hook_timeout(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(orchestrator, "HOOK_TIMEOUT_S", 0.2)
+        shop = MANIFEST.projects[0].model_copy(
+            update={"path": tmp_path, "hooks": Hooks(post_backup=["sleep 5"])}
+        )
+        [error] = orchestrator.run_hooks(shop, "post_backup")
+        assert error.startswith("post_backup hook failed: command timed out after 0.2s")
+
+    def test_hook_output_is_redacted(self, tmp_path: Path) -> None:
+        hooks = Hooks(pre_backup=["echo TOKEN=abc123xyz >&2; false"])
+        shop = MANIFEST.projects[0].model_copy(update={"path": tmp_path, "hooks": hooks})
+        [error] = orchestrator.run_hooks(shop, "pre_backup")
+        assert "abc123xyz" not in error
