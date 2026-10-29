@@ -54,6 +54,16 @@ class Snapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class Node:
+    """A file or directory inside a snapshot, as listed by ``restic ls``."""
+
+    path: str
+    type: str
+    uid: int
+    gid: int
+
+
+@dataclass(frozen=True, slots=True)
 class BackupSummary:
     snapshot_id: str
     bytes_processed: int
@@ -183,6 +193,45 @@ class Restic:
         result = self._run(args)
         data = json.loads(result.stdout or "[]")
         return sorted((Snapshot.from_json(s) for s in data), key=lambda s: s.time)
+
+    def snapshot(self, snapshot_id: str) -> Snapshot:
+        """One snapshot by ID (full or short)."""
+        data = json.loads(self._run(["snapshots", "--json", snapshot_id]).stdout or "[]")
+        if not data:
+            raise CommandError(
+                f"snapshot {snapshot_id[:8]} not found in the repository",
+                hint="it may have been forgotten by retention or `restic forget`; pick another "
+                "run with --run (see `drkit runs list`)",
+            )
+        return Snapshot.from_json(data[0])
+
+    def ls(self, snapshot_id: str) -> list[Node]:
+        """Every file and directory of a snapshot, with its original owner."""
+        nodes = []
+        for line in self._run(["ls", "--json", snapshot_id]).stdout.splitlines():
+            data = json.loads(line)
+            if data.get("struct_type") == "node":
+                nodes.append(
+                    Node(
+                        path=data["path"],
+                        type=data["type"],
+                        uid=int(data.get("uid", 0)),
+                        gid=int(data.get("gid", 0)),
+                    )
+                )
+        return nodes
+
+    def restore(self, snapshot_id: str, path: str, target: str, *, delete: bool = False) -> None:
+        """Restore the contents of directory ``path`` of a snapshot into ``target``.
+
+        Files are always overwritten. With ``delete``, files in ``target`` that are not in the
+        snapshot are removed, so ``target`` ends up identical to the backed-up directory.
+        restic restores owners and modes when it runs as root.
+        """
+        args = ["restore", f"{snapshot_id}:{path}", "--target", target]
+        if delete:
+            args.append("--delete")
+        self._run(args, timeout=BACKUP_TIMEOUT_S)
 
     def dump(self, snapshot_id: str, path: str) -> str:
         return self._run(["dump", snapshot_id, path]).stdout

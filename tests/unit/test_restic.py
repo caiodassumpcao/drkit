@@ -12,7 +12,7 @@ from drkit import runner
 from drkit.config import Repository, Retention
 from drkit.errors import CommandError, CommandTimeoutError, ConfigError
 from drkit.restic import Restic, Snapshot
-from drkit.runner import CommandResult
+from drkit.runner import CommandResult, PipeResult
 
 REPO = Repository(
     url="s3:https://user:hunter22@s3.example.com/bucket", password_file=Path("/etc/drkit/pw")
@@ -261,6 +261,81 @@ class TestQueries:
         assert repo.dump("abc", "/runs/r1.json") == "content"
         assert fake.argv[0] == ["restic", "dump", "abc", "/runs/r1.json"]
         assert repo.dump_command("abc", "/x") == ["restic", "dump", "abc", "/x"]
+
+    def test_snapshot_by_id(self, repo: Restic, fake: FakeRun) -> None:
+        data = snapshot_json("a1", ["drkit"], paths=["/var/lib/docker/volumes/v/_data"])
+        fake.responses = [(0, json.dumps([data]), "")]
+        snapshot = repo.snapshot("a1")
+        assert (snapshot.id, snapshot.paths) == ("a1" * 8, ("/var/lib/docker/volumes/v/_data",))
+        assert fake.argv[0] == ["restic", "snapshots", "--json", "a1"]
+
+    def test_missing_snapshot(self, repo: Restic, fake: FakeRun) -> None:
+        fake.responses = [(0, "[]", "")]
+        with pytest.raises(CommandError, match="snapshot 0123abcd not found"):
+            repo.snapshot("0123abcdef")
+
+    def test_ls_keeps_nodes_only(self, repo: Restic, fake: FakeRun) -> None:
+        lines = [
+            {"message_type": "snapshot", "struct_type": "snapshot", "id": "a1"},
+            {"struct_type": "node", "path": "/srv", "type": "dir", "uid": 0, "gid": 0},
+            {"struct_type": "node", "path": "/srv/.env", "type": "file", "uid": 1000, "gid": 33},
+        ]
+        fake.responses = [(0, "\n".join(json.dumps(line) for line in lines), "")]
+        nodes = repo.ls("a1")
+        assert [(n.path, n.type, n.uid, n.gid) for n in nodes] == [
+            ("/srv", "dir", 0, 0),
+            ("/srv/.env", "file", 1000, 33),
+        ]
+        assert fake.argv[0] == ["restic", "ls", "--json", "a1"]
+
+    def test_restore(self, repo: Restic, fake: FakeRun) -> None:
+        repo.restore("a1", "/srv/shop", "/srv/new")
+        repo.restore("v1", "/data", "/mnt/v", delete=True)
+        assert fake.argv == [
+            ["restic", "restore", "a1:/srv/shop", "--target", "/srv/new"],
+            ["restic", "restore", "v1:/data", "--target", "/mnt/v", "--delete"],
+        ]
+        assert fake.calls[0]["timeout"] == restic_module.BACKUP_TIMEOUT_S
+
+    def test_restore_failure(self, repo: Restic, fake: FakeRun) -> None:
+        fake.responses = [(1, "", "Fatal: no such directory")]
+        with pytest.raises(CommandError, match="restic restore failed with exit code 1"):
+            repo.restore("a1", "/srv/shop", "/srv/new")
+
+
+class TestDumpInto:
+    @pytest.fixture
+    def pipes(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+        codes: list[tuple[int, int]] = []
+
+        def pipe(producer: Sequence[str], consumer: Sequence[str], **kwargs: Any) -> PipeResult:
+            p_code, c_code = codes.pop(0)
+            return PipeResult(
+                producer=CommandResult(tuple(producer), p_code, "", "Fatal: bad file", 0.0),
+                consumer=CommandResult(tuple(consumer), c_code, "", "ERROR: syntax", 0.0),
+            )
+
+        monkeypatch.setattr(runner, "pipe", pipe)
+        return codes
+
+    def test_ok(self, repo: Restic, pipes: list[tuple[int, int]]) -> None:
+        pipes.append((0, 0))
+        repo.dump_into("a1", "/shop/db/shop.sql", ["mysql"], label="mysql")
+
+    @pytest.mark.parametrize(
+        ("codes", "message"),
+        [
+            ((1, 0), "restic dump of shop/db/shop.sql failed with exit code 1: Fatal: bad file"),
+            ((0, 2), "mysql failed with exit code 2: ERROR: syntax"),
+        ],
+    )
+    def test_either_side_failing(
+        self, repo: Restic, pipes: list[tuple[int, int]], codes: tuple[int, int], message: str
+    ) -> None:
+        pipes.append(codes)
+        with pytest.raises(CommandError) as exc_info:
+            repo.dump_into("a1", "/shop/db/shop.sql", ["mysql"], label="mysql")
+        assert exc_info.value.message == message
 
 
 class TestMaintenance:
