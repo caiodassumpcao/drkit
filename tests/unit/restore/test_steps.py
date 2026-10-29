@@ -29,6 +29,7 @@ def plan(*actions: object) -> tuple[RestorePlan, list[int]]:
             target="shop",
             run_id="20261029T030000Z-a1f3",
             steps=[make(n, a) for n, a in enumerate(actions, start=1)],
+            restore_id="r1",
         ),
         calls,
     )
@@ -38,7 +39,7 @@ def test_steps_run_in_order_and_are_timed() -> None:
     restore_plan, calls = plan("cloned at 9c1e2b7", None)
     seen: list[StepResult] = []
 
-    report = steps.execute(restore_plan, on_step=seen.append, restore_id="r1")
+    report = steps.execute(restore_plan, on_step=seen.append)
 
     assert calls == [1, 2]
     assert report.ok
@@ -104,7 +105,7 @@ def test_run_saves_the_report(tmp_path: Path) -> None:
 
     report = steps.run(restore_plan, lock_path=tmp_path / "lock", state_directory=tmp_path)
 
-    assert report.report_path == tmp_path / "reports" / f"restore-{report.restore_id}.json"
+    assert report.report_path == tmp_path / "reports" / "restore-r1.json"
     data = json.loads(report.report_path.read_text())
     assert data["status"] == "failed"
     assert data["kind"] == "project"
@@ -145,7 +146,7 @@ def test_unwritable_report_directory_is_reported(tmp_path: Path) -> None:
 
 def test_report_dict() -> None:
     restore_plan, _ = plan("done")
-    data = steps.execute(restore_plan, restore_id="r1").to_dict()
+    data = steps.execute(restore_plan).to_dict()
     assert data["restore_id"] == "r1"
     assert data["status"] == "ok"
     assert data["report_path"] is None

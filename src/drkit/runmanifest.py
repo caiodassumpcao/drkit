@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import secrets
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -106,9 +106,10 @@ def manifest_tags(host: str, run_id: str, status: RunStatus) -> list[str]:
     return ["drkit", f"host:{host}", f"run:{run_id}", f"kind:{META_KIND}", f"status:{status}"]
 
 
-def list_runs(restic: Restic) -> list[RunSummary]:
-    """All runs of the host, oldest first."""
-    snapshots = restic.snapshots(["drkit", f"kind:{META_KIND}"])
+def list_runs(restic: Restic, *, status: RunStatus | None = None) -> list[RunSummary]:
+    """All runs of the host (or those with ``status``), oldest first."""
+    tags = ["drkit", f"kind:{META_KIND}"] + ([f"status:{status}"] if status else [])
+    snapshots = restic.snapshots(tags)
     return [RunSummary.from_snapshot(s) for s in snapshots]
 
 
@@ -144,6 +145,27 @@ def load_run(restic: Restic, run_id: str = "latest") -> RunManifest:
             hint="list the available runs with `drkit runs list`",
         )
     return load_manifest(restic, RunSummary.from_snapshot(snapshots[-1]))
+
+
+def find_run(
+    restic: Restic, run_id: str, *, accept: Callable[[RunManifest], bool], what: str
+) -> RunManifest:
+    """The run a restore starts from.
+
+    An explicit ``run_id`` is taken as is (the caller checks the items it needs). ``latest``
+    means the newest *successful* run that ``accept``s: a run limited to other projects
+    (``backup --project``) or one with failed items is never picked by default.
+    """
+    if run_id != "latest":
+        return load_run(restic, run_id)
+    for summary in reversed(list_runs(restic, status="ok")):
+        run = load_manifest(restic, summary)
+        if accept(run):
+            return run
+    raise DrkitError(
+        f"no successful run contains {what}",
+        hint="list the runs with `drkit runs list`, and pick one with --run",
+    )
 
 
 def load_manifest(restic: Restic, run: RunSummary) -> RunManifest:

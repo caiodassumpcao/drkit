@@ -218,17 +218,21 @@ class DatabaseSource(BaseSource):
         """Back up the database; return ItemResult fields (snapshot, bytes, version, …)."""
 
     def require_env(self, container: str, names: Sequence[str]) -> str:
-        """Value of the first of ``names`` set (and non-empty) in the container."""
-        for name in names:
-            if value := docker.container_env(container, name):
-                return value
-        what = (
-            f"environment variable {names[0]} is not set"
-            if len(names) == 1
-            else f"none of the environment variables {', '.join(names)} is set"
-        )
-        raise DrkitError(
-            f"{what} in the {self.database.service!r} container",
-            hint="set it in the compose file, or point user_env / password_env at the "
-            "variable that holds it",
-        )
+        return require_env(container, names, service=self.database.service)
+
+
+def require_env(container: str, names: Sequence[str], *, service: str) -> str:
+    """Value of the first of ``names`` set (and non-empty) in the container of ``service``."""
+    for name in names:
+        if value := docker.container_env(container, name):
+            return value
+    what = (
+        f"environment variable {names[0]} is not set"
+        if len(names) == 1
+        else f"none of the environment variables {', '.join(names)} is set"
+    )
+    raise DrkitError(
+        f"{what} in the {service!r} container",
+        hint="set it in the compose file, or point user_env / password_env at the "
+        "variable that holds it",
+    )

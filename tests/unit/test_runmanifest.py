@@ -191,3 +191,67 @@ class TestLoadRun:
     def test_invalid_id(self) -> None:
         with pytest.raises(DrkitError, match="invalid run ID 'x,y'"):
             runmanifest.load_run(FakeRestic([]), "x,y")  # type: ignore[arg-type]
+
+
+class TestFindRun:
+    """The run a restore starts from."""
+
+    OLD, PARTIAL, OTHER = (
+        "20261027T030000Z-aaaa",
+        "20261027T040000Z-bbbb",
+        "20261027T050000Z-cccc",
+    )
+
+    @pytest.fixture
+    def restic(self) -> FakeRestic:
+        return FakeRestic(
+            [
+                meta_snapshot(self.OLD, "ok", 3),
+                meta_snapshot(self.PARTIAL, "partial", 4),
+                meta_snapshot(self.OTHER, "ok", 5),
+            ],
+            {
+                f"/runs/{run}.json": manifest(
+                    run_id=run, items=[ITEM.model_copy(update={"project": project})]
+                ).to_json()
+                for run, project in (
+                    (self.OLD, "shop"),
+                    (self.PARTIAL, "shop"),
+                    (self.OTHER, "blog"),
+                )
+            },
+        )
+
+    def test_latest_successful_run_that_contains_the_target(self, restic: FakeRestic) -> None:
+        run = runmanifest.find_run(
+            restic,  # type: ignore[arg-type]
+            "latest",
+            accept=lambda run: any(item.project == "shop" for item in run.items),
+            what="project shop",
+        )
+        assert run.run_id == self.OLD
+        assert restic.queries[0] == (["drkit", "kind:meta", "status:ok"],)
+        assert [path for _, path in restic.dumps] == [
+            f"/runs/{self.OTHER}.json",
+            f"/runs/{self.OLD}.json",
+        ]
+
+    def test_explicit_run_is_taken_as_is(self, restic: FakeRestic) -> None:
+        run = runmanifest.find_run(
+            restic,  # type: ignore[arg-type]
+            self.PARTIAL,
+            accept=lambda run: False,
+            what="project shop",
+        )
+        assert run.run_id == self.PARTIAL
+
+    def test_nothing_suitable(self, restic: FakeRestic) -> None:
+        with pytest.raises(DrkitError, match="no successful run contains project api") as exc:
+            runmanifest.find_run(
+                restic,  # type: ignore[arg-type]
+                "latest",
+                accept=lambda run: False,
+                what="project api",
+            )
+        assert exc.value.hint is not None
+        assert "--run" in exc.value.hint

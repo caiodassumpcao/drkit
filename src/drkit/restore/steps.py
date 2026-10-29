@@ -50,6 +50,8 @@ class RestorePlan:
     steps: list[Step]
     warnings: list[str] = field(default_factory=list)
     """Things the operator should know before confirming (e.g. uncommitted changes)."""
+    restore_id: str = field(default_factory=new_run_id)
+    """Names the report and tags the safety dumps taken by this restore."""
 
     def check_from_step(self, from_step: int) -> None:
         if not 1 <= from_step <= len(self.steps):
@@ -108,13 +110,12 @@ def execute(
     *,
     from_step: int = 1,
     on_step: Callable[[StepResult], None] | None = None,
-    restore_id: str | None = None,
 ) -> RestoreReport:
     """Run the steps of ``plan`` from ``from_step`` on, stopping at the first failure."""
     plan.check_from_step(from_step)
     started = datetime.now(UTC)
     report = RestoreReport(
-        restore_id=restore_id or new_run_id(started),
+        restore_id=plan.restore_id,
         kind=plan.kind,
         target=plan.target,
         run_id=plan.run_id,
