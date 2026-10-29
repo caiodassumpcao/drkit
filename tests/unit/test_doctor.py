@@ -1,3 +1,4 @@
+import shutil
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -279,15 +280,16 @@ retention: {{daily: 7}}
 @pytest.mark.usefixtures("healthy")
 class TestProjectChecks:
     @pytest.fixture
-    def with_project(self, manifest: Path, tmp_path: Path) -> Path:
+    def with_project(self, manifest: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (tmp_path / "shop").mkdir()
+        (tmp_path / "shop" / "compose.yaml").write_text("services: {}\n")
         manifest.write_text(
             manifest.read_text()
             + f"""
 projects:
   - name: shop
     path: {tmp_path / "shop"}
-    git: {{remote: "git@example.com:shop.git"}}
+    git: {{remote: "git@example.com:shop.git", deploy_key: {tmp_path / "key"}}}
     compose: {{project_name: shop-prod, files: [compose.yaml]}}
     databases:
       - {{engine: postgres, service: db, database: shop}}
@@ -296,11 +298,44 @@ projects:
     volumes: [{{name: uploads}}]
 """
         )
+        write_private(tmp_path / "key", "deploy key")
+        monkeypatch.setattr(
+            docker, "compose_config", lambda *args: {"services": {"db": {}, "mysql": {}}}
+        )
+        monkeypatch.setattr(docker, "compose_container", lambda project, service: "ctr")
+        monkeypatch.setattr(docker, "compose_volume", lambda project, volume: f"{project}_{volume}")
         return manifest
 
-    def test_services_and_volumes(
-        self, with_project: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def projects(self, manifest: Path) -> dict[str, Check]:
+        checks = doctor.run_checks(manifest, environ={})
+        return {c.name: c for c in checks if c.category is Category.PROJECTS}
+
+    def test_all_ok(self, with_project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        remotes: list[list[str]] = []
+
+        def run(args: Sequence[str], **kwargs: object) -> CommandResult:
+            if list(args[3:5]) == ["ls-remote", "--heads"]:
+                remotes.append(list(args))
+            return fake_run(HEALTHY)(args, **kwargs)
+
+        monkeypatch.setattr(runner, "run", run)
+        checks = doctor.run_checks(with_project, environ={})
+
+        projects = {c.name: c for c in checks if c.category is Category.PROJECTS}
+        assert {name: (c.status, c.detail) for name, c in projects.items()} == {
+            "shop: directory": (Status.OK, str(with_project.parent / "shop")),
+            "shop: compose files": (Status.OK, "valid (2 services)"),
+            "shop: git remote": (Status.OK, "readable with the deploy key"),
+            "shop: service db": (Status.OK, "running"),
+            "shop: service mysql": (Status.OK, "running"),
+            "shop: volume uploads": (Status.OK, "shop-prod_uploads"),
+        }
+        assert doctor.exit_code(checks) is ExitCode.OK
+        [ls_remote] = remotes
+        assert ls_remote[-1] == "git@example.com:shop.git"
+        assert f"-i {with_project.parent / 'key'}" in ls_remote[2]
+
+    def test_service_not_running(self, with_project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[tuple[str, str]] = []
 
         def compose_container(project: str, service: str) -> str:
@@ -310,33 +345,81 @@ projects:
             return "ctr"
 
         monkeypatch.setattr(docker, "compose_container", compose_container)
-        monkeypatch.setattr(docker, "compose_volume", lambda project, volume: f"{project}_{volume}")
-
         checks = doctor.run_checks(with_project, environ={})
-
-        projects = {c.name: c for c in checks if c.category is Category.PROJECTS}
-        assert {name: (c.status, c.detail) for name, c in projects.items()} == {
-            "shop: directory": (Status.OK, str(with_project.parent / "shop")),
-            "shop: service db": (Status.OK, "running"),
-            "shop: service mysql": (Status.FAIL, "service 'mysql' has no running container"),
-            "shop: volume uploads": (Status.OK, "shop-prod_uploads"),
-        }
+        projects = by_name(checks)
+        assert projects["shop: service mysql"].status is Status.FAIL
+        assert projects["shop: service mysql"].detail == (
+            "service 'mysql' has no running container"
+        )
         assert calls == [("shop-prod", "db"), ("shop-prod", "mysql")]
         assert doctor.exit_code(checks) is ExitCode.PARTIAL_FAILURE
 
     def test_missing_directory_and_volume(
         self, with_project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        (with_project.parent / "shop").rmdir()
-        monkeypatch.setattr(docker, "compose_container", lambda project, service: "ctr")
+        shutil.rmtree(with_project.parent / "shop")
 
         def compose_volume(project: str, volume: str) -> str:
             raise DrkitError("volume 'uploads' not found", hint="docker compose up")
 
         monkeypatch.setattr(docker, "compose_volume", compose_volume)
-        projects = by_name(doctor.run_checks(with_project, environ={}))
+        monkeypatch.setattr(docker, "compose_config", lambda *args: {})
+        projects = self.projects(with_project)
         assert projects["shop: directory"].status is Status.FAIL
+        assert "shop: compose files" not in projects
         assert projects["shop: volume uploads"].hint == "docker compose up"
+
+    def test_missing_compose_file(self, with_project: Path) -> None:
+        (with_project.parent / "shop" / "compose.yaml").unlink()
+        check = self.projects(with_project)["shop: compose files"]
+        assert check.status is Status.FAIL
+        assert check.detail == f"not found: {with_project.parent / 'shop' / 'compose.yaml'}"
+
+    def test_invalid_compose_files(
+        self, with_project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def compose_config(*args: object) -> object:
+            raise DrkitError("invalid compose configuration in /srv/shop: bad", hint="fix it")
+
+        monkeypatch.setattr(docker, "compose_config", compose_config)
+        check = self.projects(with_project)["shop: compose files"]
+        assert (check.status, check.hint) == (Status.FAIL, "fix it")
+
+    def test_unreadable_git_remote(
+        self, with_project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        outputs = {**HEALTHY, "git": (128, "Permission denied (publickey).")}
+
+        def run(args: Sequence[str], **kwargs: object) -> CommandResult:
+            if "ls-remote" in args:
+                return fake_run(outputs)(args, **kwargs)
+            return fake_run(HEALTHY)(args, **kwargs)
+
+        monkeypatch.setattr(runner, "run", run)
+        check = self.projects(with_project)["shop: git remote"]
+        assert check.status is Status.FAIL
+        assert check.detail == (
+            "cannot read git remote git@example.com:shop.git: Permission denied (publickey)."
+        )
+        assert check.hint is not None
+        assert "is a deploy key with read access" in check.hint
+
+    def test_external_volume(self, with_project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def compose_volume(project: str, volume: str) -> str:
+            raise DrkitError("volume 'uploads' not found")
+
+        monkeypatch.setattr(docker, "compose_volume", compose_volume)
+        monkeypatch.setattr(
+            docker, "compose_config", lambda *args: {"volumes": {"uploads": {"external": True}}}
+        )
+        check = self.projects(with_project)["shop: volume uploads"]
+        assert check.status is Status.FAIL
+        assert "declared external" in check.detail
+
+    def test_git_check_needs_git(self, with_project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        without_git = {k: v for k, v in HEALTHY.items() if k != "git"}
+        monkeypatch.setattr(runner, "run", fake_run(without_git))
+        assert "shop: git remote" not in self.projects(with_project)
 
     def test_skipped_without_docker(
         self, with_project: Path, monkeypatch: pytest.MonkeyPatch

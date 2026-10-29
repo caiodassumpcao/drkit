@@ -13,7 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from drkit import docker, runner
+from drkit import docker, git, runner
 from drkit.config import LoadedConfig, Project, check_private_file, load_config
 from drkit.errors import (
     CommandTimeoutError,
@@ -23,6 +23,7 @@ from drkit.errors import (
     MissingDependencyError,
 )
 from drkit.restic import Restic
+from drkit.sources import volume as volume_source
 
 COMMAND_TIMEOUT_S = 15.0
 
@@ -151,12 +152,13 @@ def run_checks(config_path: Path, *, environ: Mapping[str, str] | None = None) -
         )
     if loaded is not None and available(DOCKER):
         for project in loaded.manifest.projects:
-            checks.extend(check_project(project))
+            checks.extend(check_project(project, git_available=available(GIT)))
     return checks
 
 
-def check_project(project: Project) -> list[Check]:
-    """The project directory exists, its database services run and its volumes exist."""
+def check_project(project: Project, *, git_available: bool = True) -> list[Check]:
+    """What backing up and restoring the project needs: its directory and compose files,
+    read access to its git remote, its database services running and its volumes created."""
 
     def result(name: str, status: Status, detail: str, hint: str | None = None) -> Check:
         return Check(Category.PROJECTS, f"{project.name}: {name}", status, detail, hint)
@@ -171,6 +173,16 @@ def check_project(project: Project) -> list[Check]:
             "clone the project there, or fix projects[].path",
         )
     ]
+    if project.path.is_dir():
+        checks.append(result("compose files", *_compose_status(project)))
+    if git_available:
+        try:
+            git.check_remote(project.git.remote, project.git.deploy_key)
+        except DrkitError as exc:
+            checks.append(result("git remote", Status.FAIL, exc.message, exc.hint))
+        else:
+            how = "with the deploy key" if project.git.deploy_key else "without credentials"
+            checks.append(result("git remote", Status.OK, f"readable {how}"))
     compose_project = project.compose_project
     for service in dict.fromkeys(db.service for db in project.databases):
         try:
@@ -181,12 +193,25 @@ def check_project(project: Project) -> list[Check]:
             checks.append(result(f"service {service}", Status.OK, "running"))
     for volume in project.volumes:
         try:
-            name = docker.compose_volume(compose_project, volume.name)
+            name = volume_source.resolve(project, volume.name)
         except DrkitError as exc:
             checks.append(result(f"volume {volume.name}", Status.FAIL, exc.message, exc.hint))
         else:
             checks.append(result(f"volume {volume.name}", Status.OK, name))
     return checks
+
+
+def _compose_status(project: Project) -> tuple[Status, str, str | None]:
+    missing = [str(path) for path in project.compose_files() if not path.is_file()]
+    if missing:
+        return Status.FAIL, f"not found: {', '.join(missing)}", "fix projects[].compose.files"
+    try:
+        config = docker.compose_config(
+            project.compose_project, project.compose_files(), project.path
+        )
+    except DrkitError as exc:
+        return Status.FAIL, exc.message, exc.hint
+    return Status.OK, f"valid ({_plural(len(config.get('services') or {}), 'service')})", None
 
 
 def check_repository(restic: Restic) -> Check:

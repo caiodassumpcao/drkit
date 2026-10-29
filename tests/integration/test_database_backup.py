@@ -2,6 +2,9 @@
 
 import json
 import secrets
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -9,7 +12,7 @@ import pytest
 from drkit import docker, runner
 from drkit import restic as restic_module
 from drkit.runmanifest import RunManifest
-from tests.integration.conftest import HOST, Stack, Webhook
+from tests.integration.conftest import COMPOSE_FILE, HOST, Stack, Webhook
 
 pytestmark = pytest.mark.integration
 
@@ -132,8 +135,13 @@ def test_retention_drops_whole_runs(make_drkit: Any) -> None:
     assert len(remaining) == 4  # postgres dump + globals, mysql dump, run manifest
 
 
-def test_doctor_checks_repository_access(make_drkit: Any) -> None:
-    drkit = make_drkit(databases={"shop": [POSTGRES]})
+def test_doctor_checks_repository_access(make_drkit: Any, tmp_path: Path) -> None:
+    remote = tmp_path / "shop.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    drkit = make_drkit(
+        databases={"shop": [POSTGRES]}, projects={"shop": {"git": {"remote": str(remote)}}}
+    )
+    shutil.copy(COMPOSE_FILE, Path(drkit.loaded().manifest.projects[0].path) / "compose.yaml")
 
     result = drkit("--json", "doctor")
     checks = {c["category"]: c for c in json.loads(result.stdout)["checks"]}
@@ -148,6 +156,8 @@ def test_doctor_checks_repository_access(make_drkit: Any) -> None:
     assert result.exit_code == 0, result.stdout
     projects = {c["name"]: c["status"] for c in json.loads(result.stdout)["checks"]}
     assert projects["shop: service db"] == "ok"
+    assert projects["shop: compose files"] == "ok"
+    assert projects["shop: git remote"] == "ok"
 
 
 def test_init_is_idempotent(make_drkit: Any) -> None:
