@@ -108,11 +108,11 @@ sudo curl -fsSL -o /etc/drkit/dr.yaml \
   https://raw.githubusercontent.com/caiodassumpcao/drkit/main/examples/dr.yaml
 sudo chmod 600 /etc/drkit/dr.yaml && sudoedit /etc/drkit/dr.yaml
 
-# 4. Check, initialize, back up
+# 4. Check, initialize, back up, prove it restores
 sudo drkit doctor
 sudo drkit init
 sudo drkit backup
-sudo drkit runs list
+sudo drkit verify
 ```
 
 ### Minimal manifest
@@ -147,17 +147,18 @@ Full reference: [`docs/configuration.md`](docs/configuration.md) · Annotated ex
 ### Schedule it
 
 ```bash
-sudo cp examples/systemd/drkit-backup.{service,timer} /etc/systemd/system/
+sudo cp examples/systemd/drkit-*.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now drkit-backup.timer
+sudo systemctl enable --now drkit-backup.timer drkit-verify.timer drkit-prune.timer
 ```
 
-Verify and prune timers ship with v0.2. Logs go to the journal (`journalctl -u drkit-backup`);
-add `--json` to any command for machine-readable output.
+Backups run hourly, verification daily and prune weekly. Logs go to the journal
+(`journalctl -u drkit-backup`); add `--json` to any command for machine-readable output.
 
 ```bash
 sudo drkit runs list            # recent runs and their status
-sudo drkit runs show latest     # items, sizes, snapshot IDs, errors
+sudo drkit runs show latest     # items, sizes, snapshot IDs, commit, errors
+sudo drkit report               # recent runs, current RPO, last verification (Markdown)
 ```
 
 ## Restoring
@@ -223,7 +224,7 @@ drkit is built for **Ubuntu servers running Docker Compose projects** with datab
 
 - [x] Foundation — CLI, manifest validation, `doctor`
 - [x] **v0.1** — Database backup, retention, alerts
-- [ ] **v0.2** — Volumes, secrets, project state, system paths, verification
+- [x] **v0.2** — Volumes, secrets, project state, system paths, verification
 - [ ] **v0.3** — Database and project restore
 - [ ] **v0.4** — Full host restore with Ansible
 - [ ] **v1.0** — Automated DR drill with measured RPO/RTO
@@ -242,7 +243,7 @@ git clone https://github.com/caiodassumpcao/drkit.git && cd drkit
 uv sync
 uv run pre-commit install
 uv run pytest                      # unit tests
-uv run pytest -m integration       # needs Docker
+uv run pytest -m integration       # needs Docker and restic; volume data needs root
 uv run ruff check . && uv run mypy
 ```
 
