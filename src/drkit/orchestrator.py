@@ -27,8 +27,9 @@ from drkit.runner import redact
 from drkit.sources.base import BackupContext, ItemResult, Source
 from drkit.sources.mysql import MysqlSource
 from drkit.sources.postgres import PostgresSource
+from drkit.sources.volume import VolumeSource
 
-SUPPORTED_KINDS = ("db",)
+SUPPORTED_KINDS = ("db", "volume")
 
 log = structlog.get_logger(__name__)
 
@@ -69,15 +70,18 @@ def build_sources(
         if unknown:
             raise ConfigError(
                 f"unsupported item kind(s): {', '.join(unknown)}",
-                hint=f"available in this version: {', '.join(SUPPORTED_KINDS)}",
+                hint=f"available: {', '.join(SUPPORTED_KINDS)}",
             )
     projects = [manifest.project(project)] if project else manifest.projects
     sources: list[Source] = []
-    if kinds is None or "db" in kinds:
-        for proj in projects:
+    wanted = set(SUPPORTED_KINDS if kinds is None else kinds)
+    for proj in projects:
+        if "db" in wanted:
             for db in proj.databases:
                 source_class = PostgresSource if db.engine == "postgres" else MysqlSource
                 sources.append(source_class(proj, db))
+        if "volume" in wanted:
+            sources += [VolumeSource(proj, volume) for volume in proj.volumes]
     return sources
 
 

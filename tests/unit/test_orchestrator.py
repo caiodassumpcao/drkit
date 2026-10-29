@@ -11,7 +11,7 @@ import structlog
 
 from drkit import logging as drkit_logging
 from drkit import orchestrator, state
-from drkit.config import LoadedConfig, Manifest, Repository, Retention
+from drkit.config import LoadedConfig, Manifest, Repository, Retention, Volume
 from drkit.errors import ConfigError, ExitCode, LockHeldError
 from drkit.lock import acquire
 from drkit.orchestrator import BackupReport
@@ -361,9 +361,29 @@ class TestBuildSources:
             orchestrator.build_sources(MANIFEST, project="nope")
 
     def test_unsupported_kind(self) -> None:
-        with pytest.raises(ConfigError, match=r"unsupported item kind.*volume") as excinfo:
-            orchestrator.build_sources(MANIFEST, kinds=["db", "volume"])
-        assert excinfo.value.hint == "available in this version: db"
+        with pytest.raises(ConfigError, match=r"unsupported item kind\(s\): meta") as excinfo:
+            orchestrator.build_sources(MANIFEST, kinds=["db", "meta"])
+        assert excinfo.value.hint == f"available: {', '.join(orchestrator.SUPPORTED_KINDS)}"
+
+    def test_volumes_follow_the_databases_of_their_project(self) -> None:
+        manifest = MANIFEST.model_copy(
+            update={
+                "projects": [
+                    MANIFEST.projects[0].model_copy(
+                        update={"volumes": [Volume(name="uploads", consistency="stop")]}
+                    )
+                ]
+            }
+        )
+        sources = orchestrator.build_sources(manifest)
+        assert [(s.kind, s.name) for s in sources] == [
+            ("db", "shop"),
+            ("db", "legacy"),
+            ("volume", "uploads"),
+        ]
+        assert [s.name for s in orchestrator.build_sources(manifest, kinds=["volume"])] == [
+            "uploads"
+        ]
 
 
 def test_format_message_success() -> None:
