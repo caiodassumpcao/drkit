@@ -5,6 +5,7 @@ import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 import typer
@@ -16,6 +17,10 @@ from drkit.doctor import Category, Check, Status
 from drkit.errors import ConfigError, DrkitError
 from drkit.orchestrator import BackupReport, PruneReport, RetentionResult
 from drkit.report import StatusReport
+from drkit.restore import database as database_restore
+from drkit.restore import project as project_restore
+from drkit.restore import steps as restore_steps
+from drkit.restore.steps import RestorePlan, Step
 from drkit.runmanifest import ProjectState, RunManifest, RunSummary
 from drkit.sources.base import ItemResult
 from drkit.verify import DatabaseCheck, VerifyReport
@@ -197,6 +202,9 @@ class FakeRepo:
 
     def init(self) -> bool:
         return self.created
+
+    def ensure_ready(self) -> None:
+        pass
 
 
 @pytest.fixture
@@ -463,3 +471,179 @@ class TestReport:
         _, out, _ = invoke(*args)
         assert json.loads(out)["host"] == "prod-01"
         assert limits == [10]
+
+
+class TestRestore:
+    RUN_ID = "20261029T030000Z-a1f3"
+
+    @staticmethod
+    def make_plan(kind: str, *, fail: bool = False) -> RestorePlan:
+        def broken() -> str:
+            raise DrkitError("pg_restore failed with exit code 1: ERROR: [boom]")
+
+        return RestorePlan(
+            kind=kind,  # type: ignore[arg-type]
+            target="shop" if kind == "project" else "shop/db/shop",
+            run_id=TestRestore.RUN_ID,
+            steps=[
+                Step("Locate the dumps", lambda: "dump found", ("shop/db/shop: snapshot [abc]",)),
+                Step("Restore the dumps", broken if fail else (lambda: None), ("pg_restore",)),
+                Step("Sanity check", lambda: "3 table(s)"),
+            ],
+            summary="Overwrite shop/db/shop with the dump(s) of run r.",
+            warnings=["no safety dump"],
+            restore_id="r1",
+        )
+
+    @pytest.fixture
+    def calls(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[str, object]]:
+        calls: list[dict[str, object]] = []
+        self.fail = False
+
+        def plan_db(loaded: object, project: str, restic: object, **kwargs: object) -> RestorePlan:
+            calls.append({"command": "db", "project": project, **kwargs})
+            return self.make_plan("db", fail=self.fail)
+
+        def plan_project(
+            loaded: object, project: str, restic: object, **kwargs: object
+        ) -> RestorePlan:
+            calls.append({"command": "project", "project": project, **kwargs})
+            return self.make_plan("project", fail=self.fail)
+
+        def run(plan: RestorePlan, **kwargs: object) -> restore_steps.RestoreReport:
+            calls.append({"command": "run", "from_step": kwargs["from_step"]})
+            report = restore_steps.execute(plan, **kwargs)  # type: ignore[arg-type]
+            report.report_path = tmp_path / "restore-r1.json"
+            return report
+
+        monkeypatch.setattr(database_restore, "plan", plan_db)
+        monkeypatch.setattr(project_restore, "plan", plan_project)
+        monkeypatch.setattr(restore_steps, "run", run)
+        monkeypatch.setattr(cli, "_interactive", lambda: False)
+        return calls
+
+    @pytest.mark.usefixtures("loaded")
+    def test_dry_run_prints_the_plan(self, calls: list[dict[str, object]]) -> None:
+        code, out, _ = invoke(
+            "restore",
+            "db",
+            "shop",
+            "-d",
+            "shop",
+            "--into",
+            "db2",
+            "--no-safety-backup",
+            "--run",
+            self.RUN_ID,
+            "--dry-run",
+        )
+        assert code == 0
+        assert calls == [
+            {
+                "command": "db",
+                "project": "shop",
+                "run_id": self.RUN_ID,
+                "database": "shop",
+                "into": "db2",
+                "safety_backup": False,
+            }
+        ]
+        assert f"Restore shop/db/shop from run {self.RUN_ID} (restore r1)" in out
+        assert "  1. Locate the dumps" in out
+        assert "shop/db/shop: snapshot [abc]" in out
+        assert "warning: no safety dump" in out
+
+    @pytest.mark.usefixtures("loaded")
+    def test_dry_run_json(self, calls: list[dict[str, object]]) -> None:
+        code, out, _ = invoke(
+            "--json", "restore", "project", "shop", "--dry-run", "--from-step", "2"
+        )
+        assert code == 0
+        data = json.loads(out)
+        assert (data["kind"], data["dry_run"], data["from_step"]) == ("project", True, 2)
+        assert [step["number"] for step in data["steps"]] == [1, 2, 3]
+        assert calls[0]["to_path"] is None
+
+    @pytest.mark.usefixtures("loaded")
+    def test_needs_a_confirmation(self, calls: list[dict[str, object]]) -> None:
+        code, _, err = invoke("restore", "db", "shop")
+        assert code == 5
+        assert "restore needs a confirmation" in err
+        assert "--yes" in err
+        assert [c["command"] for c in calls] == ["db"]
+
+    @pytest.mark.usefixtures("loaded")
+    def test_declined_confirmation(
+        self, calls: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli, "_interactive", lambda: True)
+        result = cli_runner.invoke(cli.app, ["restore", "db", "shop"], input="n\n")
+        assert result.exit_code == 5
+        assert "restore cancelled; nothing was changed" in ANSI.sub("", result.stderr)
+        assert [c["command"] for c in calls] == ["db"]
+
+    @pytest.mark.usefixtures("loaded")
+    def test_confirmed_restore_renders_each_step(
+        self, calls: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(cli, "_interactive", lambda: True)
+        result = cli_runner.invoke(
+            cli.app, ["restore", "project", "shop", "--to-path", "/srv/new"], input="y\n"
+        )
+        out = ANSI.sub("", result.stdout)
+        assert result.exit_code == 0, out
+        assert calls[0]["to_path"] == Path("/srv/new")
+        assert "✓ 1. Locate the dumps (0.0s): dump found" in out
+        assert "✓ 2. Restore the dumps (0.0s)\n" in out
+        assert "Restore completed in" in out
+        assert f"Report: {tmp_path / 'restore-r1.json'}" in out
+
+    @pytest.mark.usefixtures("loaded")
+    def test_failed_step_exits_with_a_resume_hint(self, calls: list[dict[str, object]]) -> None:
+        self.fail = True
+        code, out, err = invoke("restore", "db", "shop", "--yes", "--from-step", "1")
+        assert code == 5
+        assert (
+            "✗ 2. Restore the dumps (0.0s): pg_restore failed with exit code 1: ERROR: [boom]"
+            in (out)
+        )
+        assert "- 3. Sanity check: not run" in out
+        assert "Restore failed" in out
+        assert "restore stopped at step 2 (Restore the dumps)" in err
+        assert f"--from-step 2 --run {self.RUN_ID}" in " ".join(err.split())
+
+    @pytest.mark.usefixtures("loaded")
+    def test_resume_skips_earlier_steps(self, calls: list[dict[str, object]]) -> None:
+        code, out, _ = invoke("restore", "db", "shop", "--yes", "--from-step", "3")
+        assert code == 0
+        assert "1. Locate the dumps (skipped: --from-step)" in out
+        assert "✓ 1." not in out
+        assert calls[-1] == {"command": "run", "from_step": 3}
+
+    @pytest.mark.usefixtures("loaded")
+    def test_from_step_out_of_range(self, calls: list[dict[str, object]]) -> None:
+        code, _, err = invoke("restore", "db", "shop", "--yes", "--from-step", "4")
+        assert code == 2
+        assert "--from-step must be between 1 and 3" in err
+
+    @pytest.mark.usefixtures("loaded")
+    def test_json_report(
+        self, calls: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        original = restore_steps.run
+
+        def run_with_error(plan: RestorePlan, **kwargs: Any) -> restore_steps.RestoreReport:
+            report = original(plan, **kwargs)
+            report.errors.append("report: cannot write restore report in /var/lib/drkit")
+            return report
+
+        monkeypatch.setattr(restore_steps, "run", run_with_error)
+        code, out, _ = invoke("--json", "restore", "db", "shop", "--yes")
+        assert code == 0
+        data = json.loads(out)
+        assert data["status"] == "ok"
+        assert [step["status"] for step in data["steps"]] == ["ok", "ok", "ok"]
+        assert data["errors"] == ["report: cannot write restore report in /var/lib/drkit"]
+
+        code, _, err = invoke("restore", "db", "shop", "--yes")
+        assert "warning: report: cannot write restore report" in err

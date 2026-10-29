@@ -69,6 +69,7 @@ select = [
 ]
 ignore = [
     "PLR0913",  # typer commands legitimately take many options
+    "PLR0917",  # ... and typer passes them positionally
     "PLR2004",  # magic values are fine in comparisons against exit codes / modes
 ]
 

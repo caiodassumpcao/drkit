@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC
@@ -25,10 +26,13 @@ from drkit.config import (
     load_config,
     resolve_config_path,
 )
-from drkit.errors import DrkitError
+from drkit.errors import DrkitError, RestoreAbortedError
 from drkit.orchestrator import SUPPORTED_KINDS, restic_for, run_backup, run_prune
 from drkit.report import DEFAULT_LIMIT as DEFAULT_REPORT_LIMIT
 from drkit.report import build_report, human_bytes, to_markdown
+from drkit.restore import database as database_restore
+from drkit.restore import project as project_restore
+from drkit.restore import steps as restore_steps
 from drkit.runmanifest import RunManifest, list_runs, load_run
 from drkit.runner import redact, redactor
 from drkit.verify import DEFAULT_READ_DATA_SUBSET, READ_DATA_SUBSET_RE, run_verify
@@ -346,6 +350,167 @@ def report_command(
         _echo_json(report.to_dict())
     else:
         typer.echo(redact(to_markdown(report)), nl=False)
+
+
+restore_app = typer.Typer(
+    help="Restore a database or a whole project from a backup run.", no_args_is_help=True
+)
+app.add_typer(restore_app, name="restore")
+
+RunOption = Annotated[
+    str,
+    typer.Option("--run", help="Run ID, or 'latest' (the newest successful run holding it)."),
+]
+DryRunOption = Annotated[bool, typer.Option("--dry-run", help="Print the plan and change nothing.")]
+YesOption = Annotated[bool, typer.Option("--yes", "-y", help="Do not ask for confirmation.")]
+FromStepOption = Annotated[
+    int, typer.Option("--from-step", min=1, help="Resume at this step (see --dry-run).")
+]
+
+
+@restore_app.command("db")
+@handle_errors
+def restore_db_command(
+    ctx: typer.Context,
+    project: Annotated[str, typer.Argument(help="Project name in the manifest.")],
+    database: Annotated[
+        str | None,
+        typer.Option("--database", "-d", help="Restore only this database (default: all)."),
+    ] = None,
+    into: Annotated[
+        str | None,
+        typer.Option("--into", help="Restore into this compose service instead of the usual one."),
+    ] = None,
+    no_safety_backup: Annotated[
+        bool,
+        typer.Option(
+            "--no-safety-backup", help="Do not dump the current databases first (not undoable)."
+        ),
+    ] = False,
+    run_id: RunOption = "latest",
+    dry_run: DryRunOption = False,
+    yes: YesOption = False,
+    from_step: FromStepOption = 1,
+) -> None:
+    """Restore the databases of a project, after a safety dump of their current state."""
+    options: Options = ctx.obj
+    loaded = _load(options)
+    restic = restic_for(loaded.manifest, dict(loaded.env))
+    restic.ensure_ready()
+    plan = database_restore.plan(
+        loaded,
+        project,
+        restic,
+        run_id=run_id,
+        database=database,
+        into=into,
+        safety_backup=not no_safety_backup,
+    )
+    _restore(options, plan, dry_run=dry_run, yes=yes, from_step=from_step)
+
+
+@restore_app.command("project")
+@handle_errors
+def restore_project_command(
+    ctx: typer.Context,
+    project: Annotated[str, typer.Argument(help="Project name in the manifest.")],
+    to_path: Annotated[
+        Path | None,
+        typer.Option("--to-path", help="Restore into this directory instead of projects[].path."),
+    ] = None,
+    run_id: RunOption = "latest",
+    dry_run: DryRunOption = False,
+    yes: YesOption = False,
+    from_step: FromStepOption = 1,
+) -> None:
+    """Rebuild a project: code at the recorded commit, secrets, images, data and services."""
+    options: Options = ctx.obj
+    loaded = _load(options)
+    restic = restic_for(loaded.manifest, dict(loaded.env))
+    restic.ensure_ready()
+    plan = project_restore.plan(loaded, project, restic, run_id=run_id, to_path=to_path)
+    _restore(options, plan, dry_run=dry_run, yes=yes, from_step=from_step)
+
+
+def _restore(
+    options: Options,
+    plan: restore_steps.RestorePlan,
+    *,
+    dry_run: bool,
+    yes: bool,
+    from_step: int,
+) -> None:
+    plan.check_from_step(from_step)
+    if dry_run:
+        if options.json:
+            _echo_json({**plan.to_dict(), "dry_run": True, "from_step": from_step})
+        else:
+            _render_plan(plan, from_step)
+        return
+    if not options.json:
+        _render_plan(plan, from_step)
+    if not yes:
+        if not _interactive():
+            raise RestoreAbortedError(
+                "restore needs a confirmation", hint="run it from a terminal, or pass --yes"
+            )
+        if not typer.confirm("Continue?", default=False):
+            raise RestoreAbortedError("restore cancelled; nothing was changed")
+
+    report = restore_steps.run(
+        plan, from_step=from_step, on_step=None if options.json else _render_step
+    )
+    if options.json:
+        _echo_json(report.to_dict())
+    else:
+        status = "[green]completed[/green]" if report.ok else "[red]failed[/red]"
+        console.print(f"\nRestore {status} in {report.duration_s:.1f}s.")
+        if report.report_path:
+            console.print(
+                f"Report: {escape(str(report.report_path))}", highlight=False, soft_wrap=True
+            )
+        for error in report.errors:
+            err_console.print(f"[yellow]warning:[/yellow] {escape(redact(error))}")
+    failed = report.failed_step
+    if failed is not None:
+        raise RestoreAbortedError(
+            f"restore stopped at step {failed.number} ({failed.title}): {failed.error}",
+            hint=f"fix the cause, then resume with --from-step {failed.number} --run {plan.run_id}",
+        )
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _render_plan(plan: restore_steps.RestorePlan, from_step: int) -> None:
+    console.print(
+        f"Restore [bold]{escape(plan.target)}[/bold] from run [bold]{plan.run_id}[/bold] "
+        f"(restore {plan.restore_id})",
+        highlight=False,
+    )
+    console.print(escape(plan.summary), highlight=False)
+    for number, step in enumerate(plan.steps, start=1):
+        skipped = " [dim](skipped: --from-step)[/dim]" if number < from_step else ""
+        console.print(f"  {number}. {escape(step.title)}{skipped}", highlight=False)
+        for line in step.plan:
+            console.print(f"       [dim]{escape(redact(line))}[/dim]", highlight=False)
+    for warning in plan.warnings:
+        console.print(f"[yellow]warning:[/yellow] {escape(redact(warning))}", highlight=False)
+
+
+def _render_step(result: restore_steps.StepResult) -> None:
+    if result.status == "skipped":
+        return
+    if result.status == "not_run":
+        console.print(f"  [dim]- {result.number}. {escape(result.title)}: not run[/dim]")
+        return
+    mark = _STATUS_STYLE[doctor.Status.OK if result.status == "ok" else doctor.Status.FAIL]
+    line = f"{mark} {result.number}. {escape(result.title)} ({result.duration_s:.1f}s)"
+    outcome = result.detail if result.status == "ok" else result.error
+    if outcome:
+        line += f": {escape(redact(outcome))}"
+    console.print(line, highlight=False)
 
 
 runs_app = typer.Typer(help="Inspect backup runs.", no_args_is_help=True)
