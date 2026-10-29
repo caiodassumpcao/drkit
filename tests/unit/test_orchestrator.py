@@ -11,7 +11,15 @@ import structlog
 
 from drkit import logging as drkit_logging
 from drkit import orchestrator, state
-from drkit.config import LoadedConfig, Manifest, Repository, Retention, Volume
+from drkit.config import (
+    LoadedConfig,
+    Manifest,
+    Repository,
+    Retention,
+    System,
+    SystemPath,
+    Volume,
+)
 from drkit.errors import ConfigError, ExitCode, LockHeldError
 from drkit.lock import acquire
 from drkit.orchestrator import BackupReport
@@ -21,6 +29,7 @@ from drkit.sources.base import BackupContext, ItemResult
 from drkit.sources.mysql import MysqlSource
 from drkit.sources.postgres import PostgresSource
 from drkit.sources.project import ProjectSource
+from drkit.sources.system import SystemInventorySource
 
 T0 = datetime(2026, 10, 29, 3, tzinfo=UTC)
 
@@ -379,7 +388,18 @@ class TestBuildSources:
             (ProjectSource, "shop", "shop"),
             (PostgresSource, "blog", "blog"),
             (ProjectSource, "blog", "blog"),
+            (SystemInventorySource, None, "inventory"),
         ]
+
+    def test_system_items_belong_to_no_project(self) -> None:
+        manifest = MANIFEST.model_copy(
+            update={"system": System(paths=[SystemPath(path=Path("/etc/nginx"))])}
+        )
+        assert [(s.project, s.name) for s in orchestrator.build_sources(manifest)][-2:] == [
+            (None, "paths"),
+            (None, "inventory"),
+        ]
+        assert orchestrator.build_sources(manifest, project="shop", kinds=["system"]) == []
 
     def test_filter_by_project_and_kind(self) -> None:
         assert [
@@ -411,6 +431,7 @@ class TestBuildSources:
             ("db", "legacy"),
             ("volume", "uploads"),
             ("project", "shop"),
+            ("system", "inventory"),
         ]
         assert [s.name for s in orchestrator.build_sources(manifest, kinds=["volume"])] == [
             "uploads"

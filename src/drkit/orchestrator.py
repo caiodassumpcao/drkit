@@ -26,12 +26,14 @@ from drkit.runmanifest import (
 from drkit.runner import redact
 from drkit.sources.base import BackupContext, ItemResult, Source
 from drkit.sources.mysql import MysqlSource
+from drkit.sources.paths import SystemPathsSource
 from drkit.sources.postgres import PostgresSource
 from drkit.sources.project import ProjectSource
 from drkit.sources.secrets import SecretsSource
+from drkit.sources.system import SystemInventorySource
 from drkit.sources.volume import VolumeSource
 
-SUPPORTED_KINDS = ("db", "volume", "secrets", "project")
+SUPPORTED_KINDS = ("db", "volume", "secrets", "project", "system")
 
 log = structlog.get_logger(__name__)
 
@@ -88,6 +90,11 @@ def build_sources(
             sources.append(SecretsSource(proj))
         if "project" in wanted:
             sources.append(ProjectSource(proj))
+    # Host items belong to no project: a run limited to one project skips them.
+    if "system" in wanted and project is None:
+        if manifest.system.paths:
+            sources.append(SystemPathsSource(manifest.system.paths))
+        sources.append(SystemInventorySource())
     return sources
 
 
