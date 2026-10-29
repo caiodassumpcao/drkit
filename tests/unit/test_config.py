@@ -84,6 +84,22 @@ class TestModels:
         assert dbs[1].effective_user_env == "MYSQL_USER"
         assert dbs[2].effective_user_env == "U"
 
+    def test_password_env_defaults_and_override(self) -> None:
+        manifest = Manifest.model_validate(
+            manifest_with(
+                lambda d: project(d)["databases"].extend(
+                    [
+                        {"engine": "mysql", "service": "m", "database": "a"},
+                        {"engine": "mysql", "service": "m", "database": "b", "password_env": "P"},
+                    ]
+                )
+            )
+        )
+        postgres, mysql_default, mysql_custom = manifest.projects[0].databases
+        assert postgres.effective_password_env is None
+        assert mysql_default.effective_password_env == "MYSQL_PASSWORD"
+        assert mysql_custom.effective_password_env == "P"
+
     def test_unknown_project_lookup(self) -> None:
         manifest = Manifest.model_validate(MINIMAL)
         with pytest.raises(ConfigError, match="unknown project 'nope'") as excinfo:
@@ -160,6 +176,14 @@ class TestModels:
             (
                 lambda d: project(d)["databases"][0].update(user_env="1BAD"),
                 "projects[0].databases[0].user_env:",
+            ),
+            (
+                lambda d: project(d)["databases"][0].update(password_env="PGPASSWORD"),
+                "projects[0].databases[0]: password_env is only used by mysql",
+            ),
+            (
+                lambda d: project(d)["databases"][0].update(engine="mysql", password_env="1X"),
+                "projects[0].databases[0].password_env: must be an environment variable name",
             ),
             (
                 lambda d: project(d)["volumes"][0].update(consistency="pause"),

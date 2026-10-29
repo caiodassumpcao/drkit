@@ -174,19 +174,39 @@ class Compose(_Model):
 
 
 DEFAULT_USER_ENV: Mapping[str, str] = {"postgres": "POSTGRES_USER", "mysql": "MYSQL_USER"}
+DEFAULT_PASSWORD_ENV = "MYSQL_PASSWORD"  # noqa: S105 - a variable name, not a password
+
+EnvVarName = Annotated[str, _matches(_ENV_KEY_RE, "an environment variable name")]
 
 
 class Database(_Model):
     engine: Literal["postgres", "mysql"]
     service: NonEmptyStr
     database: Annotated[str, _matches(_DB_NAME_RE, "a database name ([A-Za-z0-9_-], max 63)")]
-    user_env: Annotated[str, _matches(_ENV_KEY_RE, "an environment variable name")] | None = None
+    user_env: EnvVarName | None = None
+    password_env: EnvVarName | None = None
     verify_query: NonEmptyStr | None = None
+
+    @model_validator(mode="after")
+    def _password_env_for_mysql(self) -> Self:
+        if self.password_env is not None and self.engine != "mysql":
+            raise ValueError(
+                "password_env is only used by mysql (postgres dumps authenticate over the "
+                "container's local socket)"
+            )
+        return self
 
     @property
     def effective_user_env(self) -> str:
         """Container env var holding the database user (engine default when unset)."""
         return self.user_env or DEFAULT_USER_ENV[self.engine]
+
+    @property
+    def effective_password_env(self) -> str | None:
+        """Container env var holding the password (mysql only; default MYSQL_PASSWORD)."""
+        if self.engine != "mysql":
+            return None
+        return self.password_env or DEFAULT_PASSWORD_ENV
 
 
 class Volume(_Model):

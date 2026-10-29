@@ -184,6 +184,10 @@ projects:
         service: db                   # compose service name
         database: artes
         user_env: POSTGRES_USER       # env var read from the container (default per engine)
+      - engine: mysql
+        service: mysql
+        database: legacy
+        password_env: MYSQL_PASSWORD  # mysql only: env var read from the container (default MYSQL_PASSWORD)
     volumes:
       - name: uploads                 # compose volume name (resolved via compose labels)
         consistency: live             # live | stop (stop service(s) using it during backup)
@@ -214,6 +218,7 @@ Validation rules (must have unit tests):
 - Errors name the file and the key path (`projects[0].databases[1].engine: ...`), report every problem at once and never echo input values.
 - `retention` needs at least one of `daily`/`weekly`/`monthly`; `tls.strategy: reissue` needs `email`; `notifications` needs at least one channel.
 - Database names (`databases[].database`) and volume names are unique within a project.
+- `password_env` is only valid for `engine: mysql`. User and password are read from the container environment (defaults: `POSTGRES_USER`; `MYSQL_USER` + `MYSQL_PASSWORD`), so credentials never have to be duplicated in the manifest. PostgreSQL dumps authenticate over the container's local socket and need no password.
 
 ---
 
