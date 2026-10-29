@@ -1,0 +1,45 @@
+# Runs one drkit backup. Triggered by drkit-backup.timer; can also be started by hand:
+#   sudo systemctl start drkit-backup.service && journalctl -u drkit-backup -f
+[Unit]
+Description=drkit backup
+Documentation=https://github.com/caiodassumpcao/drkit
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Adjust if drkit is installed elsewhere (`command -v drkit`).
+ExecStart=/usr/local/bin/drkit backup
+# Exit code 1 means "partial": the run happened, some items failed. Systemd marks the unit as
+# failed either way, so OnFailure= hooks and monitoring see it.
+
+# restic's cache speeds up every run; keep it out of /root so ProtectHome can stay on.
+Environment=RESTIC_CACHE_DIR=/var/cache/drkit/restic
+CacheDirectory=drkit
+StateDirectory=drkit
+StateDirectoryMode=0700
+
+# Be a good neighbour to the applications being backed up.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=6h
+
+# Hardening. drkit needs root, the Docker socket and read access to volume mountpoints, so
+# the filesystem stays readable; it only writes to its state, cache and lock files.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+UMask=0077

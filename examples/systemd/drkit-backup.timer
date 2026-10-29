@@ -1,0 +1,16 @@
+# Hourly backups. Enable with:
+#   sudo systemctl enable --now drkit-backup.timer
+#   systemctl list-timers drkit-backup.timer
+[Unit]
+Description=Hourly drkit backup
+Documentation=https://github.com/caiodassumpcao/drkit
+
+[Timer]
+OnCalendar=hourly
+# Spread the load when many servers back up to the same storage.
+RandomizedDelaySec=5min
+# Run at boot if the machine was off at the scheduled time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
