@@ -181,7 +181,7 @@ def format_message(host: str, report: BackupReport) -> str:
         f"run {run.run_id} · {len(run.items) - len(failed)} ok, {len(failed)} failed"
         f" · {_duration(run):.0f}s",
     ]
-    lines += [f"✗ {_item_label(item)}: {item.error}" for item in failed]
+    lines += [f"✗ {item.label}: {item.error}" for item in failed]
     lines += [f"✗ {error}" for error in report.errors]
     return "\n".join(lines)
 
@@ -201,7 +201,7 @@ def _backup_item(source: Source, ctx: BackupContext) -> ItemResult:
         )
     log.info(
         "backup.item",
-        item=_item_label(item),
+        item=item.label,
         status=item.status,
         bytes=item.bytes,
         duration_s=item.duration_s,
@@ -216,10 +216,6 @@ def _notify_abort(manifest: Manifest, reason: str, client: httpx.Client | None) 
         f"drkit backup on {manifest.host}: FAILED\n{reason}",
         client=client,
     )
-
-
-def _item_label(item: ItemResult) -> str:
-    return "/".join(part for part in (item.project, item.kind, item.name) if part)
 
 
 def _duration(run: RunManifest) -> float:

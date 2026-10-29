@@ -292,7 +292,7 @@ def _render_run(run: RunManifest) -> None:
         outcome = (item.snapshot or "")[:8] if item.status == "ok" else redact(item.error or "")
         table.add_row(
             _STATUS_STYLE[doctor.Status.OK if item.status == "ok" else doctor.Status.FAIL],
-            escape("/".join(p for p in (item.project, item.kind, item.name) if p)),
+            escape(item.label),
             escape(engine),
             _human_bytes(item.bytes) if item.status == "ok" else "",
             f"{item.duration_s:.1f}s",

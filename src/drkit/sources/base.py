@@ -38,6 +38,20 @@ class ItemResult(BaseModel):
     status: ItemStatus
     error: str | None = None
 
+    @property
+    def label(self) -> str:
+        return item_label(self.kind, self.project, self.name)
+
+
+# Kinds with a single item per project, named after it: their label omits the name.
+PER_PROJECT_KINDS = frozenset({"project", "secrets"})
+
+
+def item_label(kind: str, project: str | None, name: str) -> str:
+    """``shop/db/orders``, ``shop/project``, ``system/paths``."""
+    parts = [project, kind] if kind in PER_PROJECT_KINDS else [project, kind, name]
+    return "/".join(part for part in parts if part)
+
 
 @dataclass(frozen=True, slots=True)
 class BackupContext:
@@ -119,39 +133,42 @@ def stream_dump(
     )
 
 
-class DatabaseSource(ABC):
-    """Template for engines: resolve the container, dump, and turn errors into a failed item."""
+class BaseSource(ABC):
+    """Template for sources: time the item and turn expected failures into a failed item."""
 
-    kind = "db"
-    engine: str
+    kind: str
 
-    def __init__(self, project: Project, database: Database) -> None:
-        self.project: str | None = project.name
-        self.compose_project = project.compose_project
-        self.database = database
-        self.name = database.database
+    def __init__(self, *, project: str | None, name: str) -> None:
+        self.project = project
+        self.name = name
+
+    @property
+    def label(self) -> str:
+        return item_label(self.kind, self.project, self.name)
+
+    def tag_labels(self) -> dict[str, str]:
+        """Kind-specific tags (DESIGN §5.3), e.g. ``{"db": "orders"}``."""
+        return {}
 
     def tags(self, ctx: BackupContext) -> list[str]:
-        return ctx.tags(self.kind, project=self.project, db=self.name)
+        return ctx.tags(self.kind, project=self.project, **self.tag_labels())
 
-    def filename(self, extension: str) -> str:
-        return f"{self.project}/db/{self.name}.{extension}"
+    def result_fields(self) -> dict[str, Any]:
+        """Fields recorded even when the item fails (e.g. the database engine)."""
+        return {}
 
     def backup(self, ctx: BackupContext) -> ItemResult:
         started = time.monotonic()
-        common: dict[str, Any] = {
+        common = {
             "kind": self.kind,
             "project": self.project,
             "name": self.name,
-            "engine": self.engine,
+            **self.result_fields(),
         }
         try:
-            container = docker.compose_container(self.compose_project, self.database.service)
-            fields = self.dump(ctx, container)
+            fields = self.run(ctx)
         except DrkitError as exc:
-            log.error(
-                "backup.item_failed", item=f"{self.project}/db/{self.name}", error=exc.message
-            )
+            log.error("backup.item_failed", item=self.label, error=exc.message)
             return ItemResult(
                 **common,
                 status="failed",
@@ -161,6 +178,35 @@ class DatabaseSource(ABC):
         return ItemResult(
             **common, **fields, status="ok", duration_s=round(time.monotonic() - started, 3)
         )
+
+    @abstractmethod
+    def run(self, ctx: BackupContext) -> dict[str, Any]:
+        """Back up the item; return ItemResult fields (snapshot, bytes, …)."""
+
+
+class DatabaseSource(BaseSource):
+    """Template for engines: resolve the service container, then dump the database."""
+
+    kind = "db"
+    engine: str
+
+    def __init__(self, project: Project, database: Database) -> None:
+        super().__init__(project=project.name, name=database.database)
+        self.compose_project = project.compose_project
+        self.database = database
+
+    def tag_labels(self) -> dict[str, str]:
+        return {"db": self.name}
+
+    def result_fields(self) -> dict[str, Any]:
+        return {"engine": self.engine}
+
+    def filename(self, extension: str) -> str:
+        return f"{self.project}/db/{self.name}.{extension}"
+
+    def run(self, ctx: BackupContext) -> dict[str, Any]:
+        container = docker.compose_container(self.compose_project, self.database.service)
+        return self.dump(ctx, container)
 
     @abstractmethod
     def dump(self, ctx: BackupContext, container: str) -> dict[str, Any]:
