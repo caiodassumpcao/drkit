@@ -12,7 +12,7 @@ services:
     ports: ["127.0.0.1::9000"]
 
   db:
-    image: postgres:16.9@sha256:ddfe3e8713e3ee5b8f286082cb12512488dfbf3f5a1ecb0b74a42e6055af0a5f
+    image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: drkit-test-only
