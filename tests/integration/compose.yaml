@@ -36,7 +36,7 @@ services:
       retries: 90
 
   mariadb:
-    image: mariadb:11.4.13@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
+    image: mariadb:12.3.2@sha256:a02fe89cb597d4375812b2eac90cf9d0775d4686daa7f7cc750ebbcad7525bbc
     environment:
       MARIADB_ROOT_PASSWORD: drkit-test-only
       MARIADB_DATABASE: blog
