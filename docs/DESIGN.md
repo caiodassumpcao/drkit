@@ -243,21 +243,23 @@ Validation rules (must have unit tests):
 |---|---|---|
 | `db` (postgres) | `docker exec <ctr> pg_dump -U <user> -Fc <db>` + `pg_dumpall -U <user> --globals-only` (roles); user from `$<user_env>` in the container, version from `SHOW server_version` | `restic backup --stdin --stdin-filename <project>/db/<db>.dump` (streamed, no temp file — ADR-0005), and `<db>.globals.sql` as a second snapshot of the same item (`globals_snapshot`) |
 | `db` (mysql) | `docker exec -e MYSQL_PWD <ctr> mysqldump -u <user> --single-transaction --routines --triggers --events --no-tablespaces <db>`; user and password from `$<user_env>` / `$<password_env>` in the container, password handed over through drkit's environment (never argv); `mariadb-dump` / `mariadb` when the image has them (MariaDB 11) | same, `<db>.sql` |
-| `volume` | resolve mountpoint via `docker volume ls --filter label=com.docker.compose.project=<p> --filter label=com.docker.compose.volume=<v>` + `docker volume inspect` | `restic backup <mountpoint>` |
-| `secrets` | project-relative files | `restic backup <files>` |
-| `project` | git remote, HEAD SHA, dirty flag, `git diff` patch if dirty (warning), compose files, `docker compose images --format json` digests | files + JSON |
-| `system` | configured `paths` + `dpkg --get-selections`, `apt-mark showmanual`, OS release (inventory only) | paths + JSON |
+| `volume` | resolve mountpoint via `docker volume ls --filter label=com.docker.compose.project=<p> --filter label=com.docker.compose.volume=<v>` + `docker volume inspect` (external volumes are not supported); the mountpoint must be readable from the host — drkit runs as root on the Docker host (Docker Desktop keeps volumes inside its VM) | `restic backup <mountpoint>` (incremental: unchanged files are skipped) |
+| `secrets` | project-relative files (`projects[].secrets`); a missing file fails the item (ADR-0006) | `restic backup <files>` |
+| `project` | git remote, HEAD SHA, dirty flag (`git -c safe.directory=<path>`, as the checkout usually belongs to a deploy user); `git diff HEAD --binary` patch if tracked files changed (untracked files are only logged); image of each running service from its container labels, pinned with `docker image inspect` RepoDigests (`postgres:16.4@sha256:…`; local builds keep their reference) | `restic backup <compose files>`; patch streamed as `<project>/project/dirty.patch` (`patch_snapshot`); git state and images go to the run manifest `projects` |
+| `system` | two items: `paths` (configured `system.paths`; `include` globs expand to the matching files) and `inventory` (OS release, kernel, Docker version, `dpkg --get-selections`, `apt-mark showmanual`; a missing tool leaves its field `null`) | `restic backup <paths>`; inventory as `system/inventory.json` |
 | `meta` | run manifest | `--stdin-filename runs/<run_id>.json` |
 
 **Streaming correctness:** when piping `dump → restic --stdin`, both exit codes must be checked. If the dump fails but restic succeeds, the produced snapshot is **forgotten immediately** and the item is marked failed. If the PostgreSQL globals dump fails, the database dump snapshot is forgotten too: an item is complete or absent. Covered by an integration test.
 
 Containers are resolved by compose labels (`docker ps --filter label=com.docker.compose.project=<p> --filter label=com.docker.compose.service=<s>`), so the compose files are not needed to back up. Every restic call passes `--host <host>`, so snapshots belong to the logical host, not to the machine's hostname.
 
-**Volume consistency:** `consistency: stop` stops only the compose services mounting the volume, backs up, then starts them again in a `finally` block.
+**Volume consistency:** `consistency: stop` stops only the running containers that mount the volume (`docker ps --filter volume=<name>`), backs up, then starts them again in a `finally` block — also after a failed backup or a partial `docker stop`. The mountpoint is checked before anything is stopped. If the restart fails, the item fails loudly and its snapshot is forgotten (a failed item never carries a snapshot).
+
+**Path backups are all-or-nothing:** restic exits `3` when some files cannot be read but still saves a snapshot; drkit forgets it and fails the item, as for dumps.
 
 ### 5.3 Tags
 
-Every snapshot carries: `drkit`, `host:<host>`, `run:<run_id>`, `kind:<kind>`, and when applicable `project:<name>`, `db:<name>`, `volume:<name>`. The `kind:meta` snapshot also carries `status:<ok|partial|failed>`, so `runs list` needs no manifest download.
+Every snapshot carries: `drkit`, `host:<host>`, `run:<run_id>`, `kind:<kind>`, and when applicable `project:<name>`, `db:<name>`, `volume:<name>`. `system` items carry no project; the run manifest tells `paths` and `inventory` apart. The `kind:meta` snapshot also carries `status:<ok|partial|failed>`, so `runs list` needs no manifest download.
 
 ### 5.4 Run manifest schema
 
@@ -276,13 +278,13 @@ Every snapshot carries: `drkit`, `host:<host>`, `run:<run_id>`, `kind:<kind>`, a
      "bytes": 48213, "duration_s": 3.2, "status": "ok", "error": null}
   ],
   "projects": {
-    "artesempreco": {"remote": "git@github.com:...", "sha": "9c1e2b7", "dirty": false,
-                     "images": {"app": "ghcr.io/...@sha256:..."}}
+    "artesempreco": {"remote": "git@github.com:...", "sha": "9c1e2b7…", "dirty": false,
+                     "images": {"app": "ghcr.io/...:1.4@sha256:..."}, "patch_snapshot": null}
   }
 }
 ```
 
-Snapshot IDs are full restic IDs. `status` is `ok` (all items ok), `partial` (some failed) or `failed` (all failed); failed items carry `error` (redacted) and no snapshot. Readers reject unknown fields and schema versions.
+Item kinds: `db`, `volume`, `secrets` and `project` (named after the project), `system` (`paths`, `inventory`). Snapshot IDs are full restic IDs. `status` is `ok` (all items ok), `partial` (some failed) or `failed` (all failed); failed items carry `error` (redacted) and no snapshot. Readers reject unknown fields and schema versions.
 
 ### 5.5 Scheduling
 
@@ -404,7 +406,7 @@ Drill fails (non-zero) on any mismatch.
 | Level | Tooling | Scope |
 |---|---|---|
 | Unit | pytest, ≥ 85 % coverage on non-IO modules | config validation, tag/command building, redaction, run manifest, retention args, step pipeline |
-| Integration | pytest marker `integration`, Docker Compose fixtures (`tests/integration/compose.yaml`: MinIO via the community `pgsty/minio` build since upstream images are no longer published, PostgreSQL, MySQL, MariaDB), run with `--no-cov` in CI | each source backs up and restores; dump-failure handling; retention; volume consistency |
+| Integration | pytest marker `integration`, Docker Compose fixtures (`tests/integration/compose.yaml`, images pinned by digest: MinIO via the community `pgsty/minio` build since upstream images are no longer published, PostgreSQL, MySQL, MariaDB, a BusyBox app with a volume), run as root with `--no-cov` in CI (volume data is root-only, as in production; the full-run test is skipped where volume data is unreachable) | each source backs up; dump-failure handling; retention; a full run with every item kind; stopped services restart after a failure; verify restores each engine; prune |
 | End-to-end | `drkit drill --local` in CI | full host recovery |
 | Static | ruff (lint + format), mypy `--strict` | everything |
 
@@ -415,7 +417,7 @@ Drill fails (non-zero) on any mismatch.
 - `ci.yml` (push/PR): ruff, mypy, unit tests + coverage, integration tests, build wheel + Docker image, Gitleaks, pip-audit, Trivy image scan.
 - `drill.yml` (push to `main` + weekly cron + manual): DR drill, publishes summary + artifact; status badge in README.
 - `release.yml` (tag `v*`): build, GitHub Release with notes from `CHANGELOG.md`, attach wheel.
-- Dependabot: pip (uv), GitHub Actions, Docker.
+- Actions are pinned by commit SHA (with the version as a comment) and test images by digest; Dependabot updates uv, GitHub Actions and Docker Compose images.
 
 ---
 
