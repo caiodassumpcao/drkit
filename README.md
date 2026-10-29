@@ -213,7 +213,7 @@ drkit is built for **Ubuntu servers running Docker Compose projects** with datab
 
 ## Roadmap
 
-- [ ] Foundation — CLI, manifest validation, `doctor`
+- [x] Foundation — CLI, manifest validation, `doctor`
 - [ ] **v0.1** — Database backup, retention, alerts
 - [ ] **v0.2** — Volumes, secrets, project state, system paths, verification
 - [ ] **v0.3** — Database and project restore
@@ -235,7 +235,7 @@ uv sync
 uv run pre-commit install
 uv run pytest                      # unit tests
 uv run pytest -m integration       # needs Docker
-uv run ruff check . && uv run mypy src
+uv run ruff check . && uv run mypy
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
