@@ -45,7 +45,8 @@ projects:
     path: /srv/artesempreco           # absolute
     git:
       remote: git@github.com:caiodassumpcao/artesempreco.git
-      deploy_key: /etc/drkit/keys/artesempreco   # optional, for private repos (mode 0600)
+      deploy_key: /etc/drkit/keys/artesempreco   # optional, for private repos (mode 0600);
+                                                 # `restore project` clones with it, `doctor` tests it
     compose:
       project_name: artesempreco      # defaults to the project name
       files: [docker-compose.yml, docker-compose.prod.yml]   # relative to path
@@ -62,14 +63,14 @@ projects:
         password_env: MYSQL_PASSWORD  # mysql only: container env var with the password
                                       # (default: MYSQL_PASSWORD, then MARIADB_PASSWORD)
         # verify_query: SELECT count(*) FROM users   # optional extra check for `drkit verify`
-    volumes:
+    volumes:                          # volumes Compose creates (external volumes are not supported)
       - name: uploads                 # compose volume name (resolved via compose labels)
         consistency: live             # live | stop (stop the services using it during backup)
     hooks:                            # run by a shell, as root, from the project directory
       pre_backup: []
       post_backup: []                 # always run, even if the backup failed
-      post_restore: ["docker compose exec -T app php artisan migrate --force"]
-    healthchecks:
+      post_restore: ["docker compose exec -T app php artisan migrate --force"]   # after `restore project`
+    healthchecks:                     # the last step of `restore project`
       - url: http://127.0.0.1:8080/health
         expect_status: 200            # default 200
         timeout: 90                   # seconds, with exponential backoff (default 60)
