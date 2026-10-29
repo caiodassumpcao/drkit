@@ -103,6 +103,7 @@ src/drkit/
 ├── doctor.py            # environment checks behind `drkit doctor` (results only; rendering in cli.py)
 ├── restic.py            # restic wrapper: init, backup (paths/stdin), dump, restore, forget, prune, check, snapshots
 ├── docker.py            # compose ps/images/up/down, volume resolution, exec
+├── git.py               # git CLI: safe.directory, deploy key, clone/checkout, remote access
 ├── runmanifest.py       # RunManifest model, (de)serialization, lookup (latest / by id)
 ├── orchestrator.py      # backup run: hooks → sources → run manifest → retention → notify
 ├── sources/
@@ -115,10 +116,10 @@ src/drkit/
 │   ├── project.py       # git state, compose files, image digests
 │   └── system.py        # package inventory, OS info (meta only)
 ├── restore/
-│   ├── steps.py         # Step model, pipeline, timing, resume (--from-step)
-│   ├── database.py
-│   ├── project.py
-│   └── host.py
+│   ├── steps.py         # Step model, pipeline, timing, resume (--from-step), reports
+│   ├── database.py      # restore db, safety dumps; database steps of restore project
+│   ├── project.py       # restore project (§7.2)
+│   └── host.py          # restore host (v0.4)
 ├── verify.py            # restic check + DB restore test in ephemeral container
 ├── drill.py             # local DR drill (CI)
 ├── health.py            # HTTP healthchecks with retry/backoff
@@ -243,7 +244,7 @@ Validation rules (must have unit tests):
 |---|---|---|
 | `db` (postgres) | `docker exec <ctr> pg_dump -U <user> -Fc <db>` + `pg_dumpall -U <user> --globals-only` (roles); user from `$<user_env>` in the container, version from `SHOW server_version` | `restic backup --stdin --stdin-filename <project>/db/<db>.dump` (streamed, no temp file — ADR-0005), and `<db>.globals.sql` as a second snapshot of the same item (`globals_snapshot`) |
 | `db` (mysql) | `docker exec -e MYSQL_PWD <ctr> mysqldump -u <user> --single-transaction --routines --triggers --events --no-tablespaces <db>`; user and password from `$<user_env>` / `$<password_env>` in the container, password handed over through drkit's environment (never argv); `mariadb-dump` / `mariadb` when the image has them (MariaDB 11) | same, `<db>.sql` |
-| `volume` | resolve mountpoint via `docker volume ls --filter label=com.docker.compose.project=<p> --filter label=com.docker.compose.volume=<v>` + `docker volume inspect` (external volumes are not supported); the mountpoint must be readable from the host — drkit runs as root on the Docker host (Docker Desktop keeps volumes inside its VM) | `restic backup <mountpoint>` (incremental: unchanged files are skipped) |
+| `volume` | resolve mountpoint via `docker volume ls --filter label=com.docker.compose.project=<p> --filter label=com.docker.compose.volume=<v>` + `docker volume inspect`; the mountpoint must be readable from the host — drkit runs as root on the Docker host (Docker Desktop keeps volumes inside its VM) | `restic backup <mountpoint>` (incremental: unchanged files are skipped) |
 | `secrets` | project-relative files (`projects[].secrets`); a missing file fails the item (ADR-0006) | `restic backup <files>` |
 | `project` | git remote, HEAD SHA, dirty flag (`git -c safe.directory=<path>`, as the checkout usually belongs to a deploy user); `git diff HEAD --binary` patch if tracked files changed (untracked files are only logged); image of each running service from its container labels, pinned with `docker image inspect` RepoDigests (`postgres:16.4@sha256:…`; local builds keep their reference) | `restic backup <compose files>`; patch streamed as `<project>/project/dirty.patch` (`patch_snapshot`); git state and images go to the run manifest `projects` |
 | `system` | two items: `paths` (configured `system.paths`; `include` globs expand to the matching files) and `inventory` (OS release, kernel, Docker version, `dpkg --get-selections`, `apt-mark showmanual`; a missing tool leaves its field `null`) | `restic backup <paths>`; inventory as `system/inventory.json` |
@@ -252,6 +253,8 @@ Validation rules (must have unit tests):
 **Streaming correctness:** when piping `dump → restic --stdin`, both exit codes must be checked. If the dump fails but restic succeeds, the produced snapshot is **forgotten immediately** and the item is marked failed. If the PostgreSQL globals dump fails, the database dump snapshot is forgotten too: an item is complete or absent. Covered by an integration test.
 
 Containers are resolved by compose labels (`docker ps --filter label=com.docker.compose.project=<p> --filter label=com.docker.compose.service=<s>`), so the compose files are not needed to back up. Every restic call passes `--host <host>`, so snapshots belong to the logical host, not to the machine's hostname.
+
+**External volumes are not supported** (backup and restore): Compose does not create them, so they carry no Compose labels and drkit cannot tell which project owns them. When the label lookup fails, drkit reads the resolved compose model (`docker compose config`); if the volume is declared `external`, the error says so and how to fix it (let Compose manage the volume, or drop it from `projects[].volumes`). `doctor` reports the same.
 
 **Volume consistency:** `consistency: stop` stops only the running containers that mount the volume (`docker ps --filter volume=<name>`), backs up, then starts them again in a `finally` block — also after a failed backup or a partial `docker stop`. The mountpoint is checked before anything is stopped. If the restart fails, the item fails loudly and its snapshot is forgotten (a failed item never carries a snapshot).
 
@@ -306,28 +309,43 @@ Verify takes no drkit lock: restic's own locks keep `check` safe next to a backu
 
 ## 7. Restore
 
-All restore commands: `--run latest|<id>` (default `latest` successful run), `--dry-run` (print plan, change nothing), `--yes` (skip confirmation), `--from-step <n>` (resume). Every step is timed; a final report is printed and saved to `/var/lib/drkit/reports/`.
+All restore commands share one model (`restore/steps.py`):
 
-### 7.1 `drkit restore db <project> [--database <name>] [--into <service>]`
+- **Start from a run manifest** (ADR-0004): `--run <id>` uses that run (the items it needs must be `ok` in it); the default `latest` is the newest run with status `ok` that contains what is restored, so a run limited to another project (`backup --project`) or with failed items is never picked by default.
+- **Plan, then act.** The restore is planned as numbered steps before anything changes, and the plan is printed with what each step will do (snapshot IDs, commit, images, services). `--dry-run` stops there.
+- **Confirmation.** The plan's summary says what is overwritten; drkit asks before going on unless `--yes` is given, and refuses to run without a terminal and without `--yes` (exit code `5`).
+- **Run lock.** A restore holds the run lock (`3` if held): a backup taken while data is half restored would record a state that never existed.
+- **Timed steps, stop at the first failure.** Each step is timed. The first failing step stops the restore, the remaining ones are reported as not run, and the exit code is `5`; the error names the `--from-step <n> --run <id>` that resumes it once the cause is fixed. Steps are written to be re-run.
+- **Report.** Every execution writes a JSON report (steps, status, timings, details, errors; secrets redacted) to `$DRKIT_STATE_DIR/reports/restore-<restore_id>.json` (default `/var/lib/drkit/reports/`); `--json` prints it.
 
-1. Locate DB snapshot via run manifest.
-2. Safety: take a **pre-restore dump** of the current database (tagged `kind:pre-restore`) unless `--no-safety-backup`.
-3. `restic dump <snap> <file> | docker exec -i <ctr> pg_restore --clean --if-exists -d <db>` (mysql: `mysql <db>`).
-4. Run sanity query.
+### 7.1 `drkit restore db <project> [--database <name>] [--into <service>] [--no-safety-backup]`
+
+Restores every database of the project in the run, or only `--database`; `--into` restores into another compose service of the project (e.g. a staging copy), using that service's credentials.
+
+| # | Step |
+|---|---|
+| 1 | Locate the dumps: their snapshots exist in the repository, the target services are running |
+| 2 | Safety dump of each current database (same dump as a backup) as a **`kind:pre-restore`** snapshot, tagged `restore:<restore_id>`, `project:`, `db:` and no `run:` tag, so neither retention nor prune ever removes it (it is forgotten by hand once no longer needed). `--no-safety-backup` skips it (the step stays, for stable numbering) |
+| 3 | `restic dump <snap> <file> \| docker exec -i <ctr> pg_restore --clean --if-exists --single-transaction -d <db>` (one transaction: a failed restore leaves the database unchanged); MySQL/MariaDB: the dump is replayed with `mysql`/`mariadb <db>` (each table in the dump is dropped and recreated). The database is created first if missing. Objects created after the backup are left in place. Credentials come from the container, as for backups (§5.2) |
+| 4 | Sanity check: at least one table, and `verify_query` if configured |
+
+`restore db` leaves PostgreSQL roles alone: only the database goes back in time (a role password changed since the backup must keep working). `restore project` also restores roles.
 
 ### 7.2 `drkit restore project <project> [--to-path <dir>]`
 
 | # | Step |
 |---|---|
-| 1 | Clone repo (deploy key if configured) and checkout recorded SHA; apply dirty patch if present (warn) |
-| 2 | Restore compose files and secrets (`0600`, original owner) |
-| 3 | `docker compose pull` (pinned digests when recorded) |
-| 4 | Start only database services, wait healthy |
-| 5 | Restore databases |
-| 6 | Restore volumes (services stopped) |
-| 7 | `docker compose up -d` |
-| 8 | `post_restore` hooks |
-| 9 | Healthchecks |
+| 1 | An existing, non-empty project directory is **moved aside** to `<dir>.pre-restore-<restore_id>` (never deleted). Clone `git.remote` (deploy key via `core.sshCommand`, no prompts) and check out the recorded SHA (detached HEAD); apply the dirty patch if present (the plan warns that untracked files were not backed up) |
+| 2 | Restore compose files (over the cloned ones) and secrets; secrets get mode `0600` and their original owner, the checkout gets the owner of the compose files (when running as root). The resolved compose model must be valid, and a volume of the run declared `external` stops the restore here (§5.2) |
+| 3 | Images recorded with a digest are pulled by digest and tagged with the reference the compose files use, so `compose up` runs exactly them; other services: `docker compose pull --ignore-buildable` |
+| 4 | Start only the database services (`up --detach --force-recreate --wait`), then wait until each accepts TCP connections (a healthcheck may pass while the entrypoint still initializes a fresh volume) |
+| 5 | Restore databases: PostgreSQL roles from `globals_snapshot`, then each dump as in §7.1 step 3, then the sanity check |
+| 6 | Restore volumes: `docker compose up --no-start` creates missing volumes; the running containers that mount each volume are stopped; `restic restore <snap>:<path> --target <mountpoint> --delete` makes its contents identical to the backup |
+| 7 | `docker compose up --detach --force-recreate --remove-orphans` (recreated, so no container keeps a mount of the replaced directory) |
+| 8 | `post_restore` hooks (`sh -c`, from the restored directory, 30 min timeout each); the first failure stops the restore |
+| 9 | Healthchecks (`health.py`): `GET` each URL until it answers `expect_status`, retrying with exponential backoff (1 s, doubling up to 10 s) until its `timeout` |
+
+`--to-path` restores into another directory; the compose project name is unchanged, so it replaces the running project (use it when the original path is unavailable). The plan warns when the checkout's recorded origin differs from `git.remote`, when a volume of the manifest is not in the run, and when an image has no registry digest.
 
 ### 7.3 `drkit restore host [--target local] [--skip-system]`
 
@@ -370,6 +388,8 @@ Drill fails (non-zero) on any mismatch.
 - **File permissions:** manifest, password and env files must be regular files owned by the effective user running `drkit` (root in production) with no group/other permission bits (e.g. `0600`); `drkit` refuses otherwise. `doctor` applies the same check to deploy keys.
 - **No secrets in output:** `runner.py` redacts env values and known secret patterns (`*PASSWORD*=`, `*TOKEN*=`, credentials in URLs, Telegram bot tokens) from logs, errors and reports. Values passed to commands through `env=`, the env file and secret manifest fields are registered automatically; values shorter than 6 characters are not, to avoid mangling unrelated output. Typer tracebacks never render local variables. Unit-tested.
 - **Hooks** run as root from a root-owned `0600` manifest; documented as trusted input.
+- **Git remotes** are read with `BatchMode=yes` and `StrictHostKeyChecking=accept-new` (a rebuilt server has no `known_hosts` yet; a changed host key is still rejected), the deploy key passed through `core.sshCommand`, and `GIT_TERMINAL_PROMPT=0`.
+- **Restores** never delete what they replace: databases get a `kind:pre-restore` safety dump, project directories are moved aside, and secrets are written back `0600`.
 - **Supply chain:** pinned dependencies (`uv.lock`), Dependabot, `pip-audit`, Gitleaks, Trivy on the Docker image, signed tags and releases.
 
 ---
@@ -378,8 +398,9 @@ Drill fails (non-zero) on any mismatch.
 
 - Logs: structlog JSON (`event`, `run_id`, `item`, `duration_s`, `status`) to stderr → journald (human-readable on a TTY). stdout is reserved for command output, so `--json` stays machine-parseable. Every log value passes through the redactor.
 - `state.json`: last run/verify/drill status and timestamps.
+- Restore reports: one JSON file per restore in `$DRKIT_STATE_DIR/reports/` (§7).
 - `drkit report [--format md|json] [--limit 10]`: last N runs (status, items, size, duration — read from their run manifests), current RPO (time since the last `ok` run, from the repository), last verify (from `state.json`), last drill RTO (from v1.0). Markdown by default, so it can be pasted into an issue or a status page.
-- Exit codes: `0` ok · `1` partial failure · `2` config error · `3` lock held · `4` missing dependency · `5` restore aborted. `doctor` reports the most important failure: config/permissions (`2`), then dependencies (`4`), then repository access or project checks — directory present, database services running, volumes created (`1`).
+- Exit codes: `0` ok · `1` partial failure · `2` config error · `3` lock held · `4` missing dependency · `5` restore aborted. `doctor` reports the most important failure: config/permissions (`2`), then dependencies (`4`), then repository access or project checks — directory present, compose files valid, git remote readable with the deploy key, database services running, volumes created and not external (`1`).
 - Environment overrides (tests, unprivileged development): `DRKIT_CONFIG`, `DRKIT_STATE_DIR`, `DRKIT_LOCK_FILE`.
 
 ---
@@ -388,12 +409,15 @@ Drill fails (non-zero) on any mismatch.
 
 | Command | Description |
 |---|---|
-| `drkit doctor` | Check dependencies, permissions, manifest, repository reachability, compose services |
+| `drkit doctor` | Check dependencies, permissions, manifest, repository reachability, project directories, compose files, git remotes, services and volumes |
 | `drkit init` | Initialize restic repository |
 | `drkit backup [--project p] [--only db,volume,...]` | Run a backup |
 | `drkit runs list [--limit n]` / `drkit runs show <id>` | List / inspect runs |
 | `drkit verify [--run id] [--read-data-subset 5%]` | Integrity + DB restore test |
-| `drkit restore db\|project\|host ...` | Restore (see §7) |
+| `drkit restore db <project> [--database d] [--into service] [--no-safety-backup]` | Restore databases (§7.1) |
+| `drkit restore project <project> [--to-path dir]` | Rebuild a project (§7.2) |
+| `drkit restore host ...` | Rebuild the host (§7.3, v0.4) |
+| Restore options | `--run latest\|<id>`, `--dry-run`, `--yes`, `--from-step n` |
 | `drkit drill --local` | DR drill |
 | `drkit prune` | Forget snapshots of runs without manifest older than 24 h, then `restic prune` (weekly) |
 | `drkit report [--format md\|json] [--limit n]` | Status report |
@@ -406,7 +430,7 @@ Drill fails (non-zero) on any mismatch.
 | Level | Tooling | Scope |
 |---|---|---|
 | Unit | pytest, ≥ 85 % coverage on non-IO modules | config validation, tag/command building, redaction, run manifest, retention args, step pipeline |
-| Integration | pytest marker `integration`, Docker Compose fixtures (`tests/integration/compose.yaml`, images pinned by digest: MinIO via the community `pgsty/minio` build since upstream images are no longer published, PostgreSQL, MySQL, MariaDB, a BusyBox app with a volume), run as root with `--no-cov` in CI (volume data is root-only, as in production; the full-run test is skipped where volume data is unreachable) | each source backs up; dump-failure handling; retention; a full run with every item kind; stopped services restart after a failure; verify restores each engine; prune |
+| Integration | pytest marker `integration`, Docker Compose fixtures (`tests/integration/compose.yaml`, images pinned by digest: MinIO via the community `pgsty/minio` build since upstream images are no longer published, PostgreSQL, MySQL, MariaDB, a BusyBox app with a volume), run as root with `--no-cov` in CI (volume data is root-only, as in production; the full-run test is skipped where volume data is unreachable) | each source backs up; dump-failure handling; retention; a full run with every item kind; stopped services restart after a failure; verify restores each engine; prune; `restore db` with its safety dumps on each engine; `restore project` rebuilds a destroyed demo project (`tests/integration/demo/`: containers, volumes and directory removed) with identical rows, file checksums and a green healthcheck |
 | End-to-end | `drkit drill --local` in CI | full host recovery |
 | Static | ruff (lint + format), mypy `--strict` | everything |
 
@@ -484,15 +508,17 @@ Each phase = one branch, one PR, one release tag. A phase is done only when **al
 **Done when:** a full run contains all item kinds; verify restores each DB into an ephemeral container and passes; stopped services always restart (tested).
 
 ### Phase 3 — Project restore (`feat/project-restore`, `v0.3.0`)
-- `restore/steps.py` (pipeline, timings, `--dry-run`, `--from-step`), `health.py`.
+- `restore/steps.py` (pipeline, timings, `--dry-run`, `--from-step`, reports), `health.py`.
 - `restore db` (with pre-restore safety dump) and `restore project` (§7.2).
+- `doctor` checks compose files and git remote access; external volumes fail with an actionable error.
+- `docs/runbook.md`: database and project restore.
 
 **Done when:** integration test destroys a demo project (containers, volumes, directory) and `restore project` brings it back with identical data and green healthcheck.
 
 ### Phase 4 — Host restore (`feat/host-restore`, `v0.4.0`)
 - `scripts/bootstrap.sh` (idempotent, `set -euo pipefail`, shellcheck clean).
 - `restore host` (§7.3): Ansible integration, system paths, nginx validation, TLS strategy, checklist, inventory diff.
-- `docs/runbook.md`.
+- `docs/runbook.md`: host recovery.
 
 **Done when:** on a clean Ubuntu VM (or CI runner) `bootstrap.sh` + `restore host` recover all projects and nginx; report shows per-step timings.
 
