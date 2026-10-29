@@ -14,7 +14,7 @@ from drkit import __version__, cli, doctor, runner
 from drkit.config import LoadedConfig, Manifest
 from drkit.doctor import Category, Check, Status
 from drkit.errors import ConfigError, DrkitError
-from drkit.orchestrator import BackupReport, RetentionResult
+from drkit.orchestrator import BackupReport, PruneReport, RetentionResult
 from drkit.runmanifest import ProjectState, RunManifest, RunSummary
 from drkit.sources.base import ItemResult
 from drkit.verify import DatabaseCheck, VerifyReport
@@ -423,3 +423,23 @@ class TestVerify:
         assert code == 2
         assert "use a percentage" in err
         assert calls == []
+
+
+class TestPrune:
+    @pytest.fixture(autouse=True)
+    def _prune(self, monkeypatch: pytest.MonkeyPatch, loaded: list[Path]) -> None:
+        report = PruneReport(orphan_runs=["20261027T030000Z-dead"], forgotten_snapshots=3)
+        monkeypatch.setattr(cli, "run_prune", lambda loaded: report)
+
+    def test_reports_forgotten_runs(self) -> None:
+        code, out, _ = invoke("prune")
+        assert code == 0
+        assert "Forgot 3 snapshot(s) of 1 incomplete run(s): 20261027T030000Z-dead" in out
+        assert "Repository pruned." in out
+
+    def test_json(self) -> None:
+        _, out, _ = invoke("--json", "prune")
+        assert json.loads(out) == {
+            "orphan_runs": ["20261027T030000Z-dead"],
+            "forgotten_snapshots": 3,
+        }

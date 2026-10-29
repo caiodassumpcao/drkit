@@ -233,7 +233,7 @@ Validation rules (must have unit tests):
 5. Items: one restic snapshot each (see §5.2). A failing item **does not abort** the run; it is recorded as failed. A failed `pre_backup` hook skips the project's items (recorded as failed) and the remaining `pre_backup` hooks.
 6. `post_backup` hooks always run, even after failures (`finally` semantics); a failing one is reported as a run error (exit code `1`) without changing the item results. Host items (`system`) come last and have no hooks.
 7. Write run manifest as a `kind:meta` snapshot. If this fails the run is reported as failed: without its manifest it cannot be restored as a set.
-8. Retention **per run** (ADR-0004): the policy is evaluated with `restic forget --dry-run --group-by host` over the `kind:meta` snapshots; every snapshot of each discarded run (`--tag run:<id>`) is then forgotten. The current run is never discarded. No prune — prune is a separate weekly command.
+8. Retention **per run** (ADR-0004): the policy is evaluated with `restic forget --dry-run --group-by host` over the `kind:meta` snapshots; every snapshot of each discarded run (`--tag run:<id>`) is then forgotten. The current run is never discarded. No prune — `drkit prune` is a separate weekly command: under the run lock it forgets the snapshots of runs that never stored their manifest and are older than 24 h (ADR-0004), then runs `restic prune`.
 9. Update `state.json` (`$DRKIT_STATE_DIR`, default `/var/lib/drkit`), emit report, send notifications (`success` or `failure`, per `notifications.on`; delivery failures are logged, never change the exit code).
 10. Exit code: `0` all ok · `1` partial failure (an item failed, or a `post_backup` hook, retention or the state update failed).
 
@@ -392,7 +392,7 @@ Drill fails (non-zero) on any mismatch.
 | `drkit verify [--run id]` | Integrity + DB restore test |
 | `drkit restore db\|project\|host ...` | Restore (see §7) |
 | `drkit drill --local` | DR drill |
-| `drkit prune` | `restic prune` (weekly) |
+| `drkit prune` | Forget snapshots of runs without manifest older than 24 h, then `restic prune` (weekly) |
 | `drkit report` | Status report |
 | Global | `--config`, `--json` (machine output), `--verbose`, `--version` |
 

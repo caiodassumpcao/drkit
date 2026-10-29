@@ -23,7 +23,7 @@ from drkit.config import (
 )
 from drkit.errors import ConfigError, ExitCode, LockHeldError
 from drkit.lock import acquire
-from drkit.orchestrator import BackupReport
+from drkit.orchestrator import BackupReport, PruneReport
 from drkit.restic import BackupSummary, Restic, Snapshot
 from drkit.runmanifest import ProjectState, RunManifest
 from drkit.sources.base import BackupContext, ItemResult
@@ -77,6 +77,7 @@ class MemoryRestic(Restic):
         self.store: dict[str, tuple[Snapshot, str]] = {}
         self.plan_remove: list[str] = []  # run IDs the retention policy drops
         self.fail_on: set[str] = set()
+        self.pruned = False
 
     def add(self, tags: Sequence[str], content: str = "", when: datetime = T0) -> str:
         sid = f"snap{len(self.store):03d}"
@@ -114,6 +115,11 @@ class MemoryRestic(Restic):
         for sid in ids:
             del self.store[sid]
         return len(ids)
+
+    def prune(self) -> None:
+        if "prune" in self.fail_on:
+            raise ConfigError("repository is locked")
+        self.pruned = True
 
     def runs(self) -> list[RunManifest]:
         return [
@@ -560,3 +566,58 @@ class TestHooks:
         shop = MANIFEST.projects[0].model_copy(update={"path": tmp_path, "hooks": hooks})
         [error] = orchestrator.run_hooks(shop, "pre_backup")
         assert "abc123xyz" not in error
+
+
+class TestPrune:
+    def restic(self) -> MemoryRestic:
+        restic = MemoryRestic()
+        old, recent = T0 - timedelta(days=2), T0 - timedelta(hours=1)
+        # A complete run, an old crashed run, a recent incomplete run, and a snapshot that
+        # belongs to no run (e.g. a future pre-restore dump).
+        restic.add(["drkit", "run:done", "kind:db"], when=old)
+        restic.add(["drkit", "run:done", "kind:meta"], when=old)
+        restic.add(["drkit", "run:crashed", "kind:db"], when=old)
+        restic.add(["drkit", "run:crashed", "kind:volume"], when=old)
+        restic.add(["drkit", "run:running", "kind:db"], when=recent)
+        restic.add(["drkit", "kind:pre-restore"], when=old)
+        return restic
+
+    def prune(self, tmp_path: Path, restic: MemoryRestic, webhook: Webhook) -> PruneReport:
+        return orchestrator.run_prune(
+            LoadedConfig(path=tmp_path / "dr.yaml", manifest=MANIFEST),
+            restic=restic,
+            lock_path=tmp_path / "drkit.lock",
+            now=T0,
+            http_client=httpx.Client(transport=httpx.MockTransport(webhook)),
+        )
+
+    def test_forgets_old_orphans_then_prunes(self, tmp_path: Path, webhook: Webhook) -> None:
+        restic = self.restic()
+
+        report = self.prune(tmp_path, restic, webhook)
+
+        assert report == PruneReport(orphan_runs=["crashed"], forgotten_snapshots=2)
+        remaining = sorted(str(s.tag_value("run")) for s, _ in restic.store.values())
+        assert remaining == ["None", "done", "done", "running"]
+        assert restic.pruned
+        assert webhook.messages == []
+
+    def test_nothing_orphaned(self, tmp_path: Path, webhook: Webhook) -> None:
+        restic = MemoryRestic()
+        restic.add(["drkit", "run:done", "kind:meta"])
+        report = self.prune(tmp_path, restic, webhook)
+        assert report == PruneReport(orphan_runs=[], forgotten_snapshots=0)
+        assert restic.pruned
+
+    def test_failure_is_notified(self, tmp_path: Path, webhook: Webhook) -> None:
+        restic = self.restic()
+        restic.fail_on = {"prune"}
+        with pytest.raises(ConfigError, match="repository is locked"):
+            self.prune(tmp_path, restic, webhook)
+        assert webhook.messages == ["drkit prune on prod-01: FAILED\nrepository is locked"]
+
+    def test_holds_the_run_lock(self, tmp_path: Path, webhook: Webhook) -> None:
+        restic = self.restic()
+        with acquire(tmp_path / "drkit.lock"), pytest.raises(LockHeldError):
+            self.prune(tmp_path, restic, webhook)
+        assert not restic.pruned

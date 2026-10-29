@@ -45,8 +45,15 @@ all snapshots tagged `run:<id>` are forgotten. A kept run is therefore always co
   snapshot tags (`status:` tag), not a download per run.
 - A run without a manifest (crash before step 7) cannot be restored as a set; its orphan
   snapshots are not referenced by any manifest and are not removed by run retention.
-  Cleaning them up is a known follow-up.
+  `drkit prune` (v0.2) forgets them: under the run lock, snapshots whose `run:<id>` has no
+  `kind:meta` snapshot and that are **older than 24 hours** are forgotten before
+  `restic prune`. The lock already rules out a run in progress on this machine; the age
+  limit also protects a run in progress elsewhere under the same host name (e.g. on a
+  server being recovered) and absorbs clock skew. Snapshots without a `run:` tag are never
+  touched.
 - Retention keeps the newest run of each period even if it is `partial`. The previous
   complete run of that period is dropped, as restic would do per snapshot.
 - The manifest schema is versioned (`"schema": 1`) and readers reject unknown fields, so a
-  format change is always explicit.
+  format change is always explicit. Until v1.0, schema 1 may gain optional fields
+  (v0.2: `projects.<name>.patch_snapshot`); a reader only ever reads manifests written by
+  the same or an older drkit, since the binary on the host writes them.

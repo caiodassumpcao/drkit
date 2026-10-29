@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import groupby
 from pathlib import Path
 from typing import Literal
@@ -23,6 +23,7 @@ from drkit.runmanifest import (
     manifest_filename,
     manifest_tags,
     new_run_id,
+    orphaned_snapshots,
     run_status,
 )
 from drkit.runner import redact
@@ -39,6 +40,11 @@ SUPPORTED_KINDS = ("db", "volume", "secrets", "project", "system")
 # Hooks may legitimately take a while (e.g. flushing a queue), but must never hang a run.
 HOOK_TIMEOUT_S = 1800.0
 
+# Snapshots of a run without manifest are only treated as orphans after this long: far
+# beyond any real run, so a run still in progress (e.g. on another machine using the same
+# host name during a recovery) is never touched.
+ORPHAN_MIN_AGE = timedelta(hours=24)
+
 HookStage = Literal["pre_backup", "post_backup"]
 
 log = structlog.get_logger(__name__)
@@ -47,6 +53,12 @@ log = structlog.get_logger(__name__)
 @dataclass(frozen=True, slots=True)
 class RetentionResult:
     removed_runs: list[str]
+    forgotten_snapshots: int
+
+
+@dataclass(frozen=True, slots=True)
+class PruneReport:
+    orphan_runs: list[str]
     forgotten_snapshots: int
 
 
@@ -185,6 +197,45 @@ def run_backup(
                 format_message(manifest.host, report),
                 client=http_client,
             )
+    return report
+
+
+def run_prune(
+    loaded: LoadedConfig,
+    *,
+    restic: Restic | None = None,
+    lock_path: Path | None = None,
+    now: datetime | None = None,
+    http_client: httpx.Client | None = None,
+) -> PruneReport:
+    """Forget the snapshots of runs that never finished, then reclaim unreferenced data.
+
+    Holds the run lock: no backup of this host can be writing while snapshots are judged
+    orphaned, and ``restic prune`` needs the repository to itself anyway.
+    """
+    manifest = loaded.manifest
+    repo = restic or restic_for(manifest, dict(loaded.env))
+    with lock.acquire(lock_path):
+        log.info("prune.start")
+        try:
+            repo.ensure_ready()
+            cutoff = (now or datetime.now(UTC)) - ORPHAN_MIN_AGE
+            orphans = orphaned_snapshots(repo, before=cutoff)
+            forgotten = repo.forget(snapshot.id for snapshot in orphans)
+            repo.prune()
+        except DrkitError as exc:
+            notify(
+                manifest.notifications,
+                "failure",
+                f"drkit prune on {manifest.host}: FAILED\n{exc.message}",
+                client=http_client,
+            )
+            raise
+    report = PruneReport(
+        orphan_runs=sorted({run for s in orphans if (run := s.tag_value("run"))}),
+        forgotten_snapshots=forgotten,
+    )
+    log.info("prune.finish", orphan_runs=len(report.orphan_runs), forgotten=forgotten)
     return report
 
 

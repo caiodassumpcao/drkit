@@ -25,7 +25,7 @@ from drkit.config import (
     resolve_config_path,
 )
 from drkit.errors import DrkitError
-from drkit.orchestrator import SUPPORTED_KINDS, restic_for, run_backup
+from drkit.orchestrator import SUPPORTED_KINDS, restic_for, run_backup, run_prune
 from drkit.runmanifest import RunManifest, list_runs, load_run
 from drkit.runner import redact, redactor
 from drkit.verify import DEFAULT_READ_DATA_SUBSET, READ_DATA_SUBSET_RE, run_verify
@@ -300,6 +300,23 @@ def verify_command(
         for error in [*report.errors, *(f"notification {e}" for e in report.notify_errors)]:
             err_console.print(f"[yellow]warning:[/yellow] {escape(redact(error))}")
     raise typer.Exit(int(report.exit_code))
+
+
+@app.command("prune")
+@handle_errors
+def prune_command(ctx: typer.Context) -> None:
+    """Forget snapshots of runs that never finished, then delete unreferenced data."""
+    options: Options = ctx.obj
+    report = run_prune(_load(options))
+    if options.json:
+        _echo_json(asdict(report))
+        return
+    if report.orphan_runs:
+        console.print(
+            f"Forgot {report.forgotten_snapshots} snapshot(s) of "
+            f"{len(report.orphan_runs)} incomplete run(s): {', '.join(report.orphan_runs)}"
+        )
+    console.print("[green]Repository pruned.[/green]")
 
 
 runs_app = typer.Typer(help="Inspect backup runs.", no_args_is_help=True)

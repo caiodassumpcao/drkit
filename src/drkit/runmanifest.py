@@ -112,6 +112,22 @@ def list_runs(restic: Restic) -> list[RunSummary]:
     return [RunSummary.from_snapshot(s) for s in snapshots]
 
 
+def orphaned_snapshots(restic: Restic, *, before: datetime) -> list[Snapshot]:
+    """Snapshots of runs that never stored their manifest, taken before ``before``.
+
+    A run killed between its first item and its manifest (crash, power loss, OOM) leaves
+    snapshots no run manifest points at: retention, which works on manifests, never sees
+    them. The age limit keeps a run that is still in progress elsewhere out of reach.
+    """
+    snapshots = restic.snapshots(["drkit"])
+    complete = {s.tag_value("run") for s in snapshots if f"kind:{META_KIND}" in s.tags}
+    return [
+        s
+        for s in snapshots
+        if (run := s.tag_value("run")) is not None and run not in complete and s.time < before
+    ]
+
+
 def load_run(restic: Restic, run_id: str = "latest") -> RunManifest:
     """Fetch the manifest of ``run_id`` (or of the most recent run)."""
     if run_id == "latest":
