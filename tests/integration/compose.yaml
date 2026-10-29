@@ -1,0 +1,47 @@
+# Throwaway services for integration tests. Credentials below are test-only fixtures.
+services:
+  minio:
+    # The upstream minio/minio image is no longer published; pgsty/minio is a maintained
+    # community build of the same server.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: drkit-test
+      MINIO_ROOT_PASSWORD: drkit-test-only
+    ports: ["127.0.0.1::9000"]
+
+  db:
+    image: postgres:16.9
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: drkit-test-only
+      POSTGRES_DB: shop
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d shop"]
+      interval: 2s
+      retries: 60
+
+  mysql:
+    image: mysql:8.4.9
+    environment:
+      MYSQL_ROOT_PASSWORD: drkit-test-only
+      MYSQL_DATABASE: legacy
+      MYSQL_USER: app
+      MYSQL_PASSWORD: drkit-test-only
+    healthcheck:
+      # TCP on purpose: the entrypoint's temporary init server only listens on the socket.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pdrkit-test-only"]
+      interval: 2s
+      retries: 90
+
+  mariadb:
+    image: mariadb:11.4.13
+    environment:
+      MARIADB_ROOT_PASSWORD: drkit-test-only
+      MARIADB_DATABASE: blog
+      MARIADB_USER: app
+      MARIADB_PASSWORD: drkit-test-only
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      retries: 60
