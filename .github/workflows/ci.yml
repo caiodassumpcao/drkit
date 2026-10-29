@@ -41,6 +41,31 @@ jobs:
       - name: Build sdist and wheel
         run: uv build
 
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    env:
+      RESTIC_VERSION: 0.18.1
+      RESTIC_SHA256: 680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install restic
+        run: |
+          curl -fsSL -o restic.bz2 \
+            "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2"
+          echo "${RESTIC_SHA256}  restic.bz2" | sha256sum --check --strict
+          bunzip2 restic.bz2
+          sudo install -m 0755 restic /usr/local/bin/restic
+          restic version
+      - name: Pull service images
+        run: docker compose -f tests/integration/compose.yaml pull --quiet
+      - run: uv sync --locked
+      - run: uv run pytest -m integration --no-cov
+
   gitleaks:
     name: Secret scan
     runs-on: ubuntu-latest
