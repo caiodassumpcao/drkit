@@ -64,7 +64,9 @@ jobs:
       - name: Pull service images
         run: docker compose -f tests/integration/compose.yaml pull --quiet
       - run: uv sync --locked
-      - run: uv run pytest -m integration --no-cov
+      - name: Run integration tests as root
+        # As in production: volume data under /var/lib/docker is only readable by root.
+        run: sudo --preserve-env=PATH .venv/bin/python -m pytest -m integration --no-cov -rs
 
   gitleaks:
     name: Secret scan
