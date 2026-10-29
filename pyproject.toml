@@ -1,6 +1,6 @@
 [project]
 name = "drkit"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Backup and disaster recovery for Docker Compose servers, with automated recovery drills."
 readme = "README.md"
 license = "MIT"
