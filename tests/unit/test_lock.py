@@ -71,3 +71,11 @@ def test_unwritable_location_is_a_config_error(tmp_path: Path) -> None:
         lock.acquire(tmp_path / "missing-dir" / "drkit.lock"),
     ):
         pass  # pragma: no cover
+
+
+def test_lock_path_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("DRKIT_LOCK_FILE", raising=False)
+    assert lock.lock_path() == Path("/run/drkit.lock")
+    monkeypatch.setenv("DRKIT_LOCK_FILE", str(tmp_path / "custom.lock"))
+    with lock.acquire():
+        assert (tmp_path / "custom.lock").read_text() == f"{os.getpid()}\n"
