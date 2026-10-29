@@ -1,0 +1,108 @@
+[project]
+name = "drkit"
+version = "0.1.0.dev0"
+description = "Backup and disaster recovery for Docker Compose servers, with automated recovery drills."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Caio Dassumpção Rodrigues", email = "caio.rodri.d@gmail.com" }]
+requires-python = ">=3.12"
+keywords = ["backup", "disaster-recovery", "docker-compose", "restic", "devops"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Archiving :: Backup",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.14.1",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+    "structlog>=26.1.0",
+    "typer>=0.27.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/caiodassumpcao/drkit"
+Issues = "https://github.com/caiodassumpcao/drkit/issues"
+Changelog = "https://github.com/caiodassumpcao/drkit/blob/main/CHANGELOG.md"
+
+[project.scripts]
+drkit = "drkit.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pre-commit>=4.7.0",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.3",
+    "types-pyyaml>=6.0.12.20260906",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "SIM",      # simplify
+    "S",        # bandit
+    "PTH",      # use pathlib
+    "RUF",
+    "T20",      # no print
+    "PL",       # pylint
+]
+ignore = [
+    "PLR0913",  # typer commands legitimately take many options
+    "PLR2004",  # magic values are fine in comparisons against exit codes / modes
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S108", "S603", "S607", "PLR0915"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+files = ["src", "tests"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "-m", "not integration",
+    "--cov=drkit",
+    "--cov-report=term-missing:skip-covered",
+]
+markers = ["integration: needs Docker and external services (run with -m integration)"]
+
+[tool.coverage.run]
+branch = true
+source = ["drkit"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@overload"]
