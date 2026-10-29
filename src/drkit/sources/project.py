@@ -10,13 +10,11 @@ from typing import Any
 
 import structlog
 
-from drkit import docker, runner
+from drkit import docker, git, runner
 from drkit.config import Project
 from drkit.errors import CommandError, DrkitError
 from drkit.runmanifest import ProjectState
 from drkit.sources.base import BackupContext, BaseSource, stream_dump
-
-GIT_TIMEOUT_S = 120.0
 
 log = structlog.get_logger(__name__)
 
@@ -31,24 +29,21 @@ class ProjectSource(BaseSource):
         """Recorded in the run manifest (``projects``) once the backup succeeded."""
 
     def git_args(self, *args: str) -> list[str]:
-        path = str(self.config.path)
-        # drkit runs as root on checkouts owned by a deploy user: without safe.directory,
-        # git refuses to read them ("dubious ownership").
-        return ["git", "-c", f"safe.directory={path}", "-C", path, *args]
+        return git.args(self.config.path, *args)
 
     def run(self, ctx: BackupContext) -> dict[str, Any]:
         try:
-            sha = runner.run(self.git_args("rev-parse", "HEAD"), timeout=GIT_TIMEOUT_S)
+            sha = runner.run(self.git_args("rev-parse", "HEAD"), timeout=git.GIT_TIMEOUT_S)
         except CommandError as exc:
             raise DrkitError(
                 f"{self.config.path} is not a git checkout with a commit: {exc.message}",
                 hint="projects[].path must be a clone of git.remote",
             ) from None
         remote = runner.run(
-            self.git_args("remote", "get-url", "origin"), timeout=GIT_TIMEOUT_S, check=False
+            self.git_args("remote", "get-url", "origin"), timeout=git.GIT_TIMEOUT_S, check=False
         )
         changes = runner.run(
-            self.git_args("status", "--porcelain"), timeout=GIT_TIMEOUT_S
+            self.git_args("status", "--porcelain"), timeout=git.GIT_TIMEOUT_S
         ).stdout.splitlines()
         untracked = sum(line.startswith("??") for line in changes)
         modified = len(changes) - untracked
