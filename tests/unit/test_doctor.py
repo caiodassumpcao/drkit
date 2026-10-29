@@ -14,6 +14,7 @@ HEALTHY: dict[str, str | BaseException] = {
     "docker compose": "v2.40.0\n",
     "git": "git version 2.43.0\n",
     "ansible-playbook": "ansible-playbook [core 2.17.4]\n",
+    "restic cat": '{"version": 2}',
 }
 
 FakeRun = Callable[..., CommandResult]
@@ -23,7 +24,7 @@ def fake_run(outputs: Mapping[str, str | BaseException | tuple[int, str]]) -> Fa
     """Answer version commands by their first word(s): text, (exit code, stderr) or exception."""
 
     def run(args: Sequence[str], **_: object) -> CommandResult:
-        key = " ".join(args[:2]) if args[0] == "docker" else args[0]
+        key = " ".join(args[:2]) if args[0] == "docker" or args[1:2] == ["cat"] else args[0]
         output = outputs.get(key, MissingDependencyError(f"command not found: {args[0]}"))
         if isinstance(output, BaseException):
             raise output
@@ -195,6 +196,13 @@ def test_exit_code_precedence() -> None:
     def check(category: Category, status: Status) -> Check:
         return Check(category, "x", status, "")
 
+    assert (
+        doctor.exit_code(
+            [check(Category.REPOSITORY, Status.FAIL), check(Category.DEPENDENCIES, Status.FAIL)]
+        )
+        is ExitCode.MISSING_DEPENDENCY
+    )
+
     assert doctor.exit_code([]) is ExitCode.OK
     assert doctor.exit_code([check(Category.DEPENDENCIES, Status.WARN)]) is ExitCode.OK
     assert (
@@ -218,3 +226,50 @@ def test_check_to_dict() -> None:
         "detail": "valid",
         "hint": None,
     }
+
+
+@pytest.mark.usefixtures("healthy")
+class TestRepositoryCheck:
+    def repo_check(self, manifest: Path) -> Check:
+        return by_name(doctor.run_checks(manifest, environ={}))["s3:https://s3.example.com/b"]
+
+    def test_reachable(self, manifest: Path) -> None:
+        check = self.repo_check(manifest)
+        assert (check.category, check.status) == (Category.REPOSITORY, Status.OK)
+
+    def test_not_initialized(self, manifest: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(runner, "run", fake_run({**HEALTHY, "restic cat": (10, "no repo")}))
+        checks = doctor.run_checks(manifest, environ={})
+        check = by_name(checks)["s3:https://s3.example.com/b"]
+        assert (check.status, check.detail, check.hint) == (
+            Status.FAIL,
+            "not initialized",
+            "run `drkit init`",
+        )
+        assert doctor.exit_code(checks) is ExitCode.PARTIAL_FAILURE
+
+    def test_wrong_password(self, manifest: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(runner, "run", fake_run({**HEALTHY, "restic cat": (12, "wrong")}))
+        check = self.repo_check(manifest)
+        assert check.status is Status.FAIL
+        assert check.detail.startswith("wrong password")
+
+    def test_skipped_without_restic(self, manifest: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        without_restic = {k: v for k, v in HEALTHY.items() if not k.startswith("restic")}
+        monkeypatch.setattr(runner, "run", fake_run(without_restic))
+        checks = doctor.run_checks(manifest, environ={})
+        assert Category.REPOSITORY not in {c.category for c in checks}
+
+    def test_credentials_in_url_are_redacted(self, tmp_path: Path) -> None:
+        manifest = write_private(
+            tmp_path / "dr.yaml",
+            f"""
+version: 1
+host: prod-01
+repository: {{url: "s3:https://key:secret-value@s3.example.com/b", password_file: {tmp_path}/pw}}
+retention: {{daily: 7}}
+""",
+        )
+        write_private(tmp_path / "pw", "pw")
+        names = [c.name for c in doctor.run_checks(manifest, environ={})]
+        assert "s3:https://key:***@s3.example.com/b" in names

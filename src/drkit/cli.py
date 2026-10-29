@@ -115,7 +115,7 @@ def _global_options(
 @app.command("doctor")
 @handle_errors
 def doctor_command(ctx: typer.Context) -> None:
-    """Check dependencies, file permissions and the manifest."""
+    """Check the manifest, file permissions, dependencies and repository access."""
     options: Options = ctx.obj
     checks = doctor.run_checks(options.config_path)
     code = doctor.exit_code(checks)

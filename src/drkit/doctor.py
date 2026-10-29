@@ -15,7 +15,14 @@ from typing import Any
 
 from drkit import runner
 from drkit.config import LoadedConfig, check_private_file, load_config
-from drkit.errors import CommandTimeoutError, ConfigError, ExitCode, MissingDependencyError
+from drkit.errors import (
+    CommandTimeoutError,
+    ConfigError,
+    DrkitError,
+    ExitCode,
+    MissingDependencyError,
+)
+from drkit.restic import Restic
 
 COMMAND_TIMEOUT_S = 15.0
 
@@ -24,6 +31,7 @@ class Category(StrEnum):
     MANIFEST = "manifest"
     PERMISSIONS = "permissions"
     DEPENDENCIES = "dependencies"
+    REPOSITORY = "repository"
 
 
 class Status(StrEnum):
@@ -128,9 +136,29 @@ def run_checks(config_path: Path, *, environ: Mapping[str, str] | None = None) -
         optional, required = (), (*REQUIRED_DEPENDENCIES, ANSIBLE)
     else:
         optional, required = (), REQUIRED_DEPENDENCIES
-    checks.extend(check_dependency(dep) for dep in required)
-    checks.extend(check_dependency(dep, required=False) for dep in optional)
+    dependency_checks = [check_dependency(dep) for dep in required]
+    dependency_checks += [check_dependency(dep, required=False) for dep in optional]
+    checks.extend(dependency_checks)
+
+    restic_ok = any(c.name == RESTIC.name and c.status is Status.OK for c in dependency_checks)
+    if loaded is not None and restic_ok:
+        manifest = loaded.manifest
+        checks.append(
+            check_repository(Restic(manifest.repository, host=manifest.host, env=loaded.env))
+        )
     return checks
+
+
+def check_repository(restic: Restic) -> Check:
+    """Open the repository: proves network access, credentials and the password at once."""
+    name = runner.redact(restic.url)
+    try:
+        initialized = restic.exists()
+    except DrkitError as exc:
+        return Check(Category.REPOSITORY, name, Status.FAIL, exc.message, exc.hint)
+    if not initialized:
+        return Check(Category.REPOSITORY, name, Status.FAIL, "not initialized", "run `drkit init`")
+    return Check(Category.REPOSITORY, name, Status.OK, "reachable, password accepted")
 
 
 def check_permissions(files: Mapping[Path, str]) -> list[Check]:
@@ -178,12 +206,14 @@ def check_dependency(dependency: Dependency, *, required: bool = True) -> Check:
 
 
 def exit_code(checks: Iterable[Check]) -> ExitCode:
-    """Configuration problems take precedence over missing dependencies."""
+    """Configuration problems first, then missing dependencies, then repository access."""
     failed = {c.category for c in checks if c.status is Status.FAIL}
     if failed & {Category.MANIFEST, Category.PERMISSIONS}:
         return ExitCode.CONFIG_ERROR
     if Category.DEPENDENCIES in failed:
         return ExitCode.MISSING_DEPENDENCY
+    if Category.REPOSITORY in failed:
+        return ExitCode.PARTIAL_FAILURE
     return ExitCode.OK
 
 
