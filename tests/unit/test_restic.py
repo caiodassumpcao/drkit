@@ -197,6 +197,25 @@ class TestBackup:
         with pytest.raises(CommandError, match="restic backup failed with exit code 1"):
             repo.backup_bytes("x", "f", [])
 
+    def test_unreadable_files_discard_the_snapshot(self, repo: Restic, fake: FakeRun) -> None:
+        error = {"message_type": "error", "error": {"message": "open /srv/x: permission denied"}}
+        fake.responses = [(3, json.dumps(error) + "\n" + SUMMARY, "")]
+        with pytest.raises(CommandError, match="could not read every file") as excinfo:
+            repo.backup_paths(["/srv"], ["drkit"])
+        assert "open /srv/x: permission denied" in excinfo.value.message
+        assert fake.argv[1] == ["restic", "forget", "abc123"]
+
+    def test_paths_failure_without_snapshot(self, repo: Restic, fake: FakeRun) -> None:
+        fake.responses = [(1, "", "Fatal: all source directories/files do not exist")]
+        with pytest.raises(CommandError, match="exit code 1: Fatal: all source"):
+            repo.backup_paths(["/nope"], ["drkit"])
+        assert len(fake.calls) == 1
+
+    def test_paths_success_without_summary(self, repo: Restic, fake: FakeRun) -> None:
+        fake.responses = [(0, "", "")]
+        with pytest.raises(CommandError, match="did not report a snapshot"):
+            repo.backup_paths(["/srv"], ["drkit"])
+
 
 class TestParseSummary:
     def test_picks_the_summary_among_status_lines(self) -> None:
@@ -241,6 +260,27 @@ class TestQueries:
         fake.responses = [(0, "content", "")]
         assert repo.dump("abc", "/runs/r1.json") == "content"
         assert fake.argv[0] == ["restic", "dump", "abc", "/runs/r1.json"]
+        assert repo.dump_command("abc", "/x") == ["restic", "dump", "abc", "/x"]
+
+
+class TestMaintenance:
+    def test_check(self, repo: Restic, fake: FakeRun) -> None:
+        repo.check()
+        repo.check("5%")
+        assert fake.argv == [
+            ["restic", "check"],
+            ["restic", "check", "--read-data-subset=5%"],
+        ]
+        assert fake.calls[0]["timeout"] == restic_module.BACKUP_TIMEOUT_S
+
+    def test_check_failure(self, repo: Restic, fake: FakeRun) -> None:
+        fake.responses = [(1, "", "Fatal: repository contains errors")]
+        with pytest.raises(CommandError, match="restic check failed with exit code 1"):
+            repo.check()
+
+    def test_prune(self, repo: Restic, fake: FakeRun) -> None:
+        repo.prune()
+        assert fake.argv == [["restic", "prune"]]
 
 
 class TestRetention:

@@ -18,8 +18,9 @@ COMMAND_TIMEOUT_S = 600.0
 # Opening the repository is quick when it works; waiting longer only delays a clear error.
 PROBE_TIMEOUT_S = 60.0
 
-# Documented restic exit code (restic >= 0.17); 11 (locked) and 12 (wrong password) are
+# Documented restic exit codes (restic >= 0.17); 11 (locked) and 12 (wrong password) are
 # mapped in Restic._error.
+EXIT_INCOMPLETE = 3  # backup: some source files could not be read (a snapshot is still saved)
 EXIT_REPOSITORY_NOT_FOUND = 10
 
 # Snapshot IDs per `restic forget` call, to stay far below the kernel's argv size limit.
@@ -137,11 +138,33 @@ class Restic:
     def backup_paths(
         self, paths: Sequence[str], tags: Sequence[str], *, excludes: Sequence[str] = ()
     ) -> BackupSummary:
+        """Back up files and directories as one snapshot.
+
+        A snapshot missing files is worse than none (it looks like a backup), so when restic
+        could not read everything the snapshot it saved anyway is forgotten and CommandError
+        is raised.
+        """
         args = ["backup", *self._backup_flags(tags)]
         for pattern in excludes:
             args += ["--exclude", pattern]
-        result = self._run([*args, "--", *paths], timeout=BACKUP_TIMEOUT_S)
-        return parse_backup_summary(result.stdout)
+        result = self._run([*args, "--", *paths], check=False, timeout=BACKUP_TIMEOUT_S)
+        try:
+            summary: BackupSummary | None = parse_backup_summary(result.stdout)
+        except CommandError:
+            summary = None
+        if result.ok and summary is not None:
+            return summary
+        if summary is not None:
+            self.forget([summary.snapshot_id])
+        if result.returncode == EXIT_INCOMPLETE:
+            errors = "; ".join(json_errors(result.stdout)[:3])
+            raise CommandError(
+                f"restic could not read every file (snapshot discarded): {runner.redact(errors)}",
+                hint="drkit must run as root to read every file it backs up",
+            )
+        if result.ok:
+            raise CommandError("restic backup did not report a snapshot")
+        raise self._error(result)
 
     def _backup_flags(self, tags: Sequence[str]) -> list[str]:
         flags = ["--host", self.host, "--json", "--quiet"]
@@ -163,6 +186,23 @@ class Restic:
 
     def dump(self, snapshot_id: str, path: str) -> str:
         return self._run(["dump", snapshot_id, path]).stdout
+
+    def dump_command(self, snapshot_id: str, path: str) -> list[str]:
+        """argv for ``restic dump``, to stream a file into :func:`runner.pipe`."""
+        return ["restic", "dump", snapshot_id, path]
+
+    # ------------------------------------------------------------------ maintenance
+
+    def check(self, read_data_subset: str | None = None) -> None:
+        """Verify the repository structure and, with ``read_data_subset``, part of the data."""
+        args = ["check"]
+        if read_data_subset:
+            args.append(f"--read-data-subset={read_data_subset}")
+        self._run(args, timeout=BACKUP_TIMEOUT_S)
+
+    def prune(self) -> None:
+        """Delete data no snapshot references any more (needs an exclusive lock)."""
+        self._run(["prune"], timeout=BACKUP_TIMEOUT_S)
 
     # ------------------------------------------------------------------ retention
 
@@ -246,6 +286,19 @@ def parse_backup_summary(stdout: str) -> BackupSummary:
                 data_added=int(message.get("data_added", 0)),
             )
     raise CommandError("restic backup did not report a summary (no snapshot was created)")
+
+
+def json_errors(stdout: str) -> list[str]:
+    """Messages of the ``error`` lines of ``restic backup --json`` output."""
+    errors: list[str] = []
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not line.startswith("{"):
+            continue
+        message = json.loads(line)
+        if message.get("message_type") == "error":
+            errors.append(str(message.get("error", {}).get("message", "")))
+    return errors
 
 
 def retention_args(retention: Retention) -> list[str]:
