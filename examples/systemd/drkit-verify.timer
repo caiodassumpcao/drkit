@@ -1,0 +1,13 @@
+# Daily verification, away from the top of the hour when backups start. Enable with:
+#   sudo systemctl enable --now drkit-verify.timer
+[Unit]
+Description=Daily drkit verify
+Documentation=https://github.com/caiodassumpcao/drkit
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

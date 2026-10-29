@@ -1,0 +1,42 @@
+# Verifies the latest run: restic check on 5% of the data, then a restore test of every
+# database in a throwaway container. Triggered by drkit-verify.timer; by hand:
+#   sudo systemctl start drkit-verify.service && journalctl -u drkit-verify -f
+[Unit]
+Description=drkit verify
+Documentation=https://github.com/caiodassumpcao/drkit
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/drkit verify
+
+# restic's cache speeds up every run; keep it out of /root so ProtectHome can stay on.
+Environment=RESTIC_CACHE_DIR=/var/cache/drkit/restic
+CacheDirectory=drkit
+StateDirectory=drkit
+StateDirectoryMode=0700
+
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=6h
+
+# Hardening. drkit needs root, the Docker socket and read access to volume mountpoints, so
+# the filesystem stays readable; it only writes to its state, cache and lock files.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+UMask=0077

@@ -1,0 +1,42 @@
+# Forgets snapshots of runs that never finished and deletes unreferenced data. Holds the
+# drkit lock: a backup due while it runs exits with code 3 ("lock held") and the next one
+# proceeds normally. By hand:
+#   sudo systemctl start drkit-prune.service && journalctl -u drkit-prune -f
+[Unit]
+Description=drkit prune
+Documentation=https://github.com/caiodassumpcao/drkit
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/drkit prune
+
+# restic's cache speeds up every run; keep it out of /root so ProtectHome can stay on.
+Environment=RESTIC_CACHE_DIR=/var/cache/drkit/restic
+CacheDirectory=drkit
+StateDirectory=drkit
+StateDirectoryMode=0700
+
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=6h
+
+# Hardening. drkit needs root, the Docker socket and read access to volume mountpoints, so
+# the filesystem stays readable; it only writes to its state, cache and lock files.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+UMask=0077

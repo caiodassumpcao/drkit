@@ -286,7 +286,7 @@ Snapshot IDs are full restic IDs. `status` is `ok` (all items ok), `partial` (so
 
 ### 5.5 Scheduling
 
-`examples/systemd/` ships `drkit-backup.service/.timer` (e.g. hourly), `drkit-verify.timer` (daily) and `drkit-prune.timer` (weekly), with `Persistent=true` and hardening directives (`ProtectHome`, `PrivateTmp`, `NoNewPrivileges` where compatible).
+`examples/systemd/` ships `drkit-backup.service/.timer` (hourly), `drkit-verify.service/.timer` (daily, 04:30) and `drkit-prune.service/.timer` (weekly, Sunday 05:15), with `Persistent=true` and hardening directives (`ProtectHome`, `PrivateTmp`, `NoNewPrivileges` where compatible). Verify and prune run away from the top of the hour; a backup due while prune holds the lock exits with code `3` and the next one runs normally.
 
 ---
 

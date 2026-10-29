@@ -1,0 +1,12 @@
+# Weekly prune, early on Sunday and clear of the daily verify. Enable with:
+#   sudo systemctl enable --now drkit-prune.timer
+[Unit]
+Description=Weekly drkit prune
+Documentation=https://github.com/caiodassumpcao/drkit
+
+[Timer]
+OnCalendar=Sun *-*-* 05:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
