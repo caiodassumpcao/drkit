@@ -1,0 +1,48 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Never paste secrets**: redact passwords, tokens, keys and
+        repository URLs with credentials from the manifest and logs below.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you ran, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. sudo drkit backup --project shop
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `drkit doctor`
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs (redacted)
+      description: "e.g. `journalctl -u drkit-backup.service -n 100`"
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: drkit version
+      placeholder: drkit --version
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS, restic and Docker versions
+      placeholder: Ubuntu 24.04, restic 0.18.1, Docker 29.0
