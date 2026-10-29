@@ -27,9 +27,10 @@ from drkit.runner import redact
 from drkit.sources.base import BackupContext, ItemResult, Source
 from drkit.sources.mysql import MysqlSource
 from drkit.sources.postgres import PostgresSource
+from drkit.sources.secrets import SecretsSource
 from drkit.sources.volume import VolumeSource
 
-SUPPORTED_KINDS = ("db", "volume")
+SUPPORTED_KINDS = ("db", "volume", "secrets")
 
 log = structlog.get_logger(__name__)
 
@@ -82,6 +83,8 @@ def build_sources(
                 sources.append(source_class(proj, db))
         if "volume" in wanted:
             sources += [VolumeSource(proj, volume) for volume in proj.volumes]
+        if "secrets" in wanted and proj.secrets:
+            sources.append(SecretsSource(proj))
     return sources
 
 
