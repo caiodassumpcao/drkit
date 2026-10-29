@@ -29,7 +29,7 @@ def test_backs_up_both_engines_with_tags_and_run_manifest(make_drkit: Any, stack
     drkit = make_drkit(databases=ALL_ENGINES)
 
     assert drkit("init").exit_code == 0
-    result = drkit("backup")
+    result = drkit("backup", "--only", "db")
     assert result.exit_code == 0, result.output
 
     run = RunManifest.from_json(drkit("--json", "runs", "show", "latest").stdout)
@@ -90,7 +90,7 @@ def test_failed_dump_discards_snapshot_and_reports_partial(
     drkit = make_drkit(databases={"shop": [POSTGRES, missing]}, webhook_url=webhook.url)
     drkit("init")
 
-    result = drkit("backup")
+    result = drkit("backup", "--only", "db")
 
     assert result.exit_code == 1, result.output
     run = RunManifest.from_json(drkit("--json", "runs", "show").stdout)
@@ -119,9 +119,9 @@ def test_retention_drops_whole_runs(make_drkit: Any) -> None:
     drkit = make_drkit(databases={"shop": [POSTGRES, MYSQL]}, retention={"daily": 1})
     drkit("init")
 
-    assert drkit("backup").exit_code == 0
+    assert drkit("backup", "--only", "db").exit_code == 0
     first = RunManifest.from_json(drkit("--json", "runs", "show").stdout).run_id
-    result = drkit("--json", "backup")
+    result = drkit("--json", "backup", "--only", "db")
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
 

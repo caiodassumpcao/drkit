@@ -112,6 +112,7 @@ def _seed(stack: Stack) -> None:
     stack.sql("mysql", "INSERT INTO notes VALUES (1, 'drkit-seed-mysql');")
     stack.sql("mariadb", "CREATE TABLE posts (id int PRIMARY KEY, title text);")
     stack.sql("mariadb", "INSERT INTO posts VALUES (1, 'drkit-seed-mariadb');")
+    stack.compose("exec", "-T", "app", "sh", "-c", "echo drkit-seed-volume > /data/hello.txt")
 
 
 @dataclass
@@ -174,7 +175,11 @@ def make_drkit(tmp_path: Path, stack: Stack, monkeypatch: pytest.MonkeyPatch) ->
         retention: dict[str, int] | None = None,
         webhook_url: str | None = None,
         bucket: str | None = None,
+        projects: dict[str, dict[str, Any]] | None = None,
+        system: dict[str, Any] | None = None,
     ) -> Drkit:
+        """``databases`` per project; ``projects`` adds or overrides project fields."""
+        extra = projects or {}
         location = bucket or f"{BUCKET}/{secrets.token_hex(4)}"
         password = _private(tmp_path / "restic.pass", secrets.token_urlsafe(24))
         env = _private(
@@ -196,11 +201,14 @@ def make_drkit(tmp_path: Path, stack: Stack, monkeypatch: pytest.MonkeyPatch) ->
                     "path": f"/srv/{name}",
                     "git": {"remote": f"git@example.com:{name}.git"},
                     "compose": {"project_name": stack.project, "files": ["compose.yaml"]},
-                    "databases": dbs,
+                    "databases": databases.get(name, []),
+                    **extra.get(name, {}),
                 }
-                for name, dbs in databases.items()
+                for name in dict.fromkeys([*databases, *extra])
             ],
         }
+        if system:
+            manifest["system"] = system
         if webhook_url:
             manifest["notifications"] = {
                 "on": ["failure"],
