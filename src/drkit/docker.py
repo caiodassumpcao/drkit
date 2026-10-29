@@ -18,6 +18,7 @@ from drkit import runner
 from drkit.errors import CommandError, DrkitError
 
 COMMAND_TIMEOUT_S = 60.0
+PULL_TIMEOUT_S = 1800.0
 # Seconds `docker stop` waits for a graceful shutdown before SIGKILL (Docker's default is 10).
 STOP_GRACE_S = 30
 
@@ -215,6 +216,34 @@ def compose_config(project: str, files: Sequence[Path], directory: Path) -> dict
         )
     config: dict[str, Any] = json.loads(result.stdout)
     return config
+
+
+def compose_run(
+    project: str, files: Sequence[Path], directory: Path, args: Sequence[str], *, timeout: float
+) -> runner.CommandResult:
+    """Run ``docker compose <args>`` on a project's files; CommandError with its output."""
+    result = runner.run(
+        [*compose_args(project, files, directory), *args], timeout=timeout, check=False
+    )
+    if not result.ok:
+        raise CommandError(
+            f"docker compose {args[0]} failed with exit code {result.returncode}: "
+            f"{runner.failure_detail(result, max_lines=3)}",
+            hint=f"check the services with `docker compose -p {project} ps` and their logs",
+        )
+    return result
+
+
+def pull_pinned(reference: str) -> None:
+    """Pull ``name:tag@sha256:…`` and point ``name:tag`` at it.
+
+    Compose files usually name images by tag; once the tag points at the recorded digest,
+    ``docker compose up`` runs exactly the image that was running at backup time.
+    """
+    runner.run(["docker", "pull", "--quiet", reference], timeout=PULL_TIMEOUT_S)
+    name = reference.split("@", 1)[0]
+    if name != reference:
+        runner.run(["docker", "tag", reference, name], timeout=COMMAND_TIMEOUT_S)
 
 
 def external_volumes(config: Mapping[str, Any]) -> set[str]:

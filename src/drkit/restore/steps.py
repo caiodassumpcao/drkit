@@ -48,10 +48,26 @@ class RestorePlan:
     """What is restored: ``shop``, or ``shop/db/orders``."""
     run_id: str
     steps: list[Step]
+    summary: str = ""
+    """What the restore overwrites, in one sentence, for the confirmation prompt."""
     warnings: list[str] = field(default_factory=list)
     """Things the operator should know before confirming (e.g. uncommitted changes)."""
     restore_id: str = field(default_factory=new_run_id)
     """Names the report and tags the safety dumps taken by this restore."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "restore_id": self.restore_id,
+            "kind": self.kind,
+            "target": self.target,
+            "run_id": self.run_id,
+            "summary": self.summary,
+            "warnings": self.warnings,
+            "steps": [
+                {"number": number, "title": step.title, "plan": list(step.plan)}
+                for number, step in enumerate(self.steps, start=1)
+            ],
+        }
 
     def check_from_step(self, from_step: int) -> None:
         if not 1 <= from_step <= len(self.steps):

@@ -404,11 +404,13 @@ def plan(
         if safety_backup
         else ["no safety dump: the current data cannot be recovered after the restore"]
     )
+    labels = ", ".join(t.label for t in targets)
     return RestorePlan(
         kind="db",
-        target=", ".join(t.label for t in targets),
+        target=labels,
         run_id=run.run_id,
         steps=steps,
+        summary=f"Overwrite {labels} with the dump(s) of run {run.run_id}.",
         warnings=warnings,
         restore_id=restore_id,
     )
