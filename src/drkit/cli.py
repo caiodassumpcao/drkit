@@ -5,7 +5,8 @@ from __future__ import annotations
 import functools
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import Annotated
 
@@ -16,9 +17,17 @@ from rich.table import Table
 
 from drkit import __version__, doctor
 from drkit import logging as drkit_logging
-from drkit.config import CONFIG_ENV_VAR, DEFAULT_CONFIG_PATH, resolve_config_path
+from drkit.config import (
+    CONFIG_ENV_VAR,
+    DEFAULT_CONFIG_PATH,
+    LoadedConfig,
+    load_config,
+    resolve_config_path,
+)
 from drkit.errors import DrkitError
-from drkit.runner import redact
+from drkit.orchestrator import SUPPORTED_KINDS, restic_for, run_backup
+from drkit.runmanifest import RunManifest, list_runs, load_run
+from drkit.runner import redact, redactor
 
 app = typer.Typer(
     name="drkit",
@@ -145,6 +154,167 @@ def _render_checks(checks: list[doctor.Check]) -> None:
         console.print(f"\n[red]{failed} check(s) failed.[/red]")
     else:
         console.print("\n[green]All checks passed.[/green]")
+
+
+def _load(options: Options) -> LoadedConfig:
+    loaded = load_config(options.config_path)
+    redactor.add_all(loaded.secret_values())
+    return loaded
+
+
+def _echo_json(payload: object) -> None:
+    typer.echo(redact(json.dumps(payload, indent=2, default=str)))
+
+
+@app.command("init")
+@handle_errors
+def init_command(ctx: typer.Context) -> None:
+    """Initialize the restic repository (does nothing if it already exists)."""
+    options: Options = ctx.obj
+    loaded = _load(options)
+    created = restic_for(loaded.manifest, dict(loaded.env)).init()
+    url = redact(loaded.manifest.repository.url)
+    if options.json:
+        _echo_json({"repository": url, "created": created})
+        return
+    if not created:
+        console.print(f"Repository {escape(url)} is already initialized.")
+        return
+    console.print(f"[green]Initialized restic repository[/green] {escape(url)}")
+    console.print(
+        "[yellow]Keep a copy of the password file and storage credentials outside this "
+        "server: without them the backups cannot be restored.[/yellow]"
+    )
+
+
+@app.command("backup")
+@handle_errors
+def backup_command(
+    ctx: typer.Context,
+    project: Annotated[
+        str | None, typer.Option("--project", "-p", help="Back up a single project.")
+    ] = None,
+    only: Annotated[
+        str | None,
+        typer.Option(
+            "--only",
+            help=f"Comma-separated item kinds (available: {', '.join(SUPPORTED_KINDS)}).",
+        ),
+    ] = None,
+) -> None:
+    """Back up every item of the manifest as one run."""
+    options: Options = ctx.obj
+    loaded = _load(options)
+    kinds = [kind.strip() for kind in only.split(",") if kind.strip()] if only else None
+    report = run_backup(loaded, project=project, kinds=kinds)
+
+    if options.json:
+        _echo_json(
+            {
+                "run": report.manifest.model_dump(mode="json", by_alias=True),
+                "retention": asdict(report.retention) if report.retention else None,
+                "errors": report.errors,
+                "notify_errors": report.notify_errors,
+            }
+        )
+    else:
+        _render_run(report.manifest)
+        if report.retention and report.retention.removed_runs:
+            console.print(
+                f"Retention: dropped {len(report.retention.removed_runs)} run(s), "
+                f"{report.retention.forgotten_snapshots} snapshot(s)."
+            )
+        for error in [*report.errors, *(f"notification {e}" for e in report.notify_errors)]:
+            err_console.print(f"[yellow]warning:[/yellow] {escape(redact(error))}")
+    raise typer.Exit(int(report.exit_code))
+
+
+runs_app = typer.Typer(help="Inspect backup runs.", no_args_is_help=True)
+app.add_typer(runs_app, name="runs")
+
+
+@runs_app.command("list")
+@handle_errors
+def runs_list_command(
+    ctx: typer.Context,
+    limit: Annotated[int, typer.Option("--limit", "-n", min=1, help="Number of runs.")] = 20,
+) -> None:
+    """List the most recent runs, newest first."""
+    options: Options = ctx.obj
+    loaded = _load(options)
+    runs = list(reversed(list_runs(restic_for(loaded.manifest, dict(loaded.env)))))[:limit]
+    if options.json:
+        _echo_json([asdict(run) for run in runs])
+        return
+    if not runs:
+        console.print("No runs yet. Create one with `drkit backup`.")
+        return
+    table = Table(box=None, pad_edge=False, header_style="bold")
+    for column in ("Run", "Time (UTC)", "Status"):
+        table.add_column(column)
+    for run in runs:
+        table.add_row(
+            run.run_id, f"{run.time.astimezone(UTC):%Y-%m-%d %H:%M:%S}", _status(run.status)
+        )
+    console.print(table)
+
+
+@runs_app.command("show")
+@handle_errors
+def runs_show_command(
+    ctx: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Run ID, or 'latest'.")] = "latest",
+) -> None:
+    """Show the run manifest of a run."""
+    options: Options = ctx.obj
+    loaded = _load(options)
+    manifest = load_run(restic_for(loaded.manifest, dict(loaded.env)), run_id)
+    if options.json:
+        typer.echo(redact(manifest.to_json()), nl=False)
+        return
+    _render_run(manifest)
+
+
+def _render_run(run: RunManifest) -> None:
+    duration = (run.finished_at - run.started_at).total_seconds()
+    console.print(
+        f"Run [bold]{run.run_id}[/bold] on {escape(run.host)}: {_status(run.status)} "
+        f"({duration:.0f}s, drkit {run.drkit_version})"
+    )
+    if not run.items:
+        console.print("No items.")
+        return
+    table = Table(box=None, pad_edge=False, header_style="bold")
+    for column in ("", "Item", "Engine", "Size", "Time", "Snapshot / error"):
+        table.add_column(column, overflow="fold")
+    for item in run.items:
+        engine = f"{item.engine} {item.engine_version or ''}".strip() if item.engine else ""
+        outcome = (item.snapshot or "")[:8] if item.status == "ok" else redact(item.error or "")
+        table.add_row(
+            _STATUS_STYLE[doctor.Status.OK if item.status == "ok" else doctor.Status.FAIL],
+            escape("/".join(p for p in (item.project, item.kind, item.name) if p)),
+            escape(engine),
+            _human_bytes(item.bytes) if item.status == "ok" else "",
+            f"{item.duration_s:.1f}s",
+            escape(outcome),
+        )
+    console.print(table)
+
+
+def _status(status: str) -> str:
+    color = {"ok": "green", "partial": "yellow"}.get(status, "red")
+    return f"[{color}]{escape(status)}[/{color}]"
+
+
+def _human_bytes(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    value = size / 1024
+    for unit in ("KiB", "MiB", "GiB"):
+        if value < 1024:
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TiB"
 
 
 def main() -> None:
