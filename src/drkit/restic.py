@@ -191,6 +191,39 @@ class Restic:
         """argv for ``restic dump``, to stream a file into :func:`runner.pipe`."""
         return ["restic", "dump", snapshot_id, path]
 
+    def dump_into(
+        self,
+        snapshot_id: str,
+        path: str,
+        consumer: Sequence[str],
+        *,
+        label: str,
+        consumer_env: Mapping[str, str] | None = None,
+    ) -> None:
+        """Stream file ``path`` of a snapshot into ``consumer``'s stdin, without a temp file.
+
+        Raises CommandError when either side fails: a restore fed a truncated dump must not
+        pass for a complete one.
+        """
+        result = runner.pipe(
+            self.dump_command(snapshot_id, path),
+            consumer,
+            timeout=BACKUP_TIMEOUT_S,
+            producer_env=self.env,
+            consumer_env=consumer_env,
+        )
+        if not result.producer.ok:
+            raise CommandError(
+                f"restic dump of {path.lstrip('/')} failed with exit code "
+                f"{result.producer.returncode}: "
+                f"{runner.failure_detail(result.producer, max_lines=3)}"
+            )
+        if not result.consumer.ok:
+            raise CommandError(
+                f"{label} failed with exit code {result.consumer.returncode}: "
+                f"{runner.failure_detail(result.consumer, max_lines=3)}"
+            )
+
     # ------------------------------------------------------------------ maintenance
 
     def check(self, read_data_subset: str | None = None) -> None:

@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 import pytest
 
+from drkit import docker as docker_module
 from drkit import runner, state, verify
 from drkit.config import LoadedConfig, Manifest, Repository
 from drkit.errors import ConfigError, DrkitError, ExitCode
@@ -77,7 +78,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
     docker = FakeDocker()
     monkeypatch.setattr(runner, "run", docker.run)
     monkeypatch.setattr(runner, "pipe", docker.pipe)
-    monkeypatch.setattr(verify, "sleep", lambda seconds: None)
+    monkeypatch.setattr(docker_module, "sleep", lambda seconds: None)
     return docker
 
 

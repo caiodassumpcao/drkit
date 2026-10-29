@@ -19,12 +19,12 @@ from typing import Literal
 import httpx
 import structlog
 
-from drkit import runner, state
+from drkit import docker, runner, state
 from drkit.config import LoadedConfig, Manifest
-from drkit.errors import CommandError, DrkitError, ExitCode
+from drkit.errors import DrkitError, ExitCode
 from drkit.notify import notify
 from drkit.orchestrator import restic_for
-from drkit.restic import BACKUP_TIMEOUT_S, Restic
+from drkit.restic import Restic
 from drkit.runmanifest import load_run
 from drkit.sources.base import ItemResult, dump_filename
 
@@ -39,7 +39,6 @@ COMMAND_TIMEOUT_S = 300.0
 CheckStatus = Literal["ok", "failed"]
 
 log = structlog.get_logger(__name__)
-sleep = time.sleep  # replaced in tests
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,7 +147,12 @@ def verify_database(restic: Restic, item: ItemResult, query: str | None) -> Data
             ],
             timeout=COMMAND_TIMEOUT_S,
         )
-        _wait_ready(container, engine.ready_command())
+        docker.wait_ready(
+            container,
+            engine.ready_command(),
+            timeout=READY_TIMEOUT_S,
+            what="the verification database",
+        )
         engine.restore(restic, container, item)
         tables = engine.count_tables(container, item.name)
         if tables == 0:
@@ -306,6 +310,16 @@ def _env_args(env: Sequence[tuple[str, str]]) -> list[str]:
     return [arg for name, value in env for arg in ("-e", f"{name}={value}")]
 
 
+def _exec(container: str, command: Sequence[str]) -> str:
+    return docker.exec_output(container, command, timeout=COMMAND_TIMEOUT_S)
+
+
+def _pipe(
+    restic: Restic, snapshot: str, filename: str, consumer: Sequence[str], *, label: str
+) -> None:
+    restic.dump_into(snapshot, f"/{filename}", ["docker", "exec", "-i", *consumer], label=label)
+
+
 def _remove(container: str) -> None:
     # Also stops it; a container that never started is "not found", which is fine.
     try:
@@ -319,58 +333,6 @@ def _version_parts(version: str | None, count: int) -> str:
     if match is None or (count == 2 and match.group(2) is None):
         raise DrkitError(f"cannot tell the server version from {version!r}")
     return ".".join(match.groups()[:count])
-
-
-def _exec(container: str, command: Sequence[str]) -> str:
-    result = runner.run(
-        ["docker", "exec", container, *command], timeout=COMMAND_TIMEOUT_S, check=False
-    )
-    if not result.ok:
-        raise CommandError(
-            f"{command[0]} failed with exit code {result.returncode}: "
-            f"{runner.failure_detail(result, max_lines=3)}"
-        )
-    return result.stdout
-
-
-def _pipe(
-    restic: Restic, snapshot: str, filename: str, consumer: Sequence[str], *, label: str
-) -> None:
-    result = runner.pipe(
-        restic.dump_command(snapshot, f"/{filename}"),
-        ["docker", "exec", "-i", *consumer],
-        timeout=BACKUP_TIMEOUT_S,
-        producer_env=restic.env,
-    )
-    if not result.producer.ok:
-        raise CommandError(
-            f"restic dump of {filename} failed with exit code {result.producer.returncode}: "
-            f"{runner.failure_detail(result.producer, max_lines=3)}"
-        )
-    if not result.consumer.ok:
-        raise CommandError(
-            f"{label} failed with exit code {result.consumer.returncode}: "
-            f"{runner.failure_detail(result.consumer, max_lines=3)}"
-        )
-
-
-def _wait_ready(container: str, probe: Sequence[str]) -> None:
-    deadline = time.monotonic() + READY_TIMEOUT_S
-    while True:
-        result = runner.run(
-            ["docker", "exec", container, *probe], timeout=COMMAND_TIMEOUT_S, check=False
-        )
-        if result.ok:
-            return
-        if "is not running" in result.stderr or time.monotonic() > deadline:
-            logs = runner.run(
-                ["docker", "logs", "--tail", "5", container], timeout=COMMAND_TIMEOUT_S, check=False
-            )
-            raise CommandError(
-                "the verification database did not start: "
-                f"{runner.failure_detail(logs, max_lines=5) or 'no output'}"
-            )
-        sleep(1.0)
 
 
 def _verify_query(manifest: Manifest, item: ItemResult) -> str | None:

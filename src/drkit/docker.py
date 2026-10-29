@@ -7,12 +7,13 @@ files nor the project directory to locate a service.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+import time
+from collections.abc import Mapping, Sequence
 
 import structlog
 
 from drkit import runner
-from drkit.errors import DrkitError
+from drkit.errors import CommandError, DrkitError
 
 COMMAND_TIMEOUT_S = 60.0
 # Seconds `docker stop` waits for a graceful shutdown before SIGKILL (Docker's default is 10).
@@ -20,6 +21,7 @@ STOP_GRACE_S = 30
 
 
 log = structlog.get_logger(__name__)
+sleep = time.sleep  # replaced in tests
 
 
 class ServiceNotRunningError(DrkitError):
@@ -86,6 +88,63 @@ def exec_args(
     for env_name in env_names:
         args += ["-e", env_name]
     return [*args, container, *command]
+
+
+def exec_output(
+    container: str,
+    command: Sequence[str],
+    *,
+    timeout: float = COMMAND_TIMEOUT_S,
+    env_names: Sequence[str] = (),
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """stdout of ``command`` run in ``container``; CommandError naming the command on failure."""
+    result = runner.run(
+        exec_args(container, command, env_names=env_names),
+        timeout=timeout,
+        env=env,
+        check=False,
+    )
+    if not result.ok:
+        raise CommandError(
+            f"{command[0]} failed with exit code {result.returncode}: "
+            f"{runner.failure_detail(result, max_lines=3)}"
+        )
+    return result.stdout
+
+
+def wait_ready(
+    container: str,
+    probe: Sequence[str],
+    *,
+    timeout: float,
+    what: str,
+    env_names: Sequence[str] = (),
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """Run ``probe`` in ``container`` every second until it succeeds.
+
+    Gives up early when the container stops, and after ``timeout`` seconds; the error then
+    carries the last lines of the container log, which usually say why.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        result = runner.run(
+            exec_args(container, probe, env_names=env_names),
+            timeout=COMMAND_TIMEOUT_S,
+            env=env,
+            check=False,
+        )
+        if result.ok:
+            return
+        if "is not running" in result.stderr or time.monotonic() > deadline:
+            logs = runner.run(
+                ["docker", "logs", "--tail", "5", container], timeout=COMMAND_TIMEOUT_S, check=False
+            )
+            raise CommandError(
+                f"{what} did not start: {runner.failure_detail(logs, max_lines=5) or 'no output'}"
+            )
+        sleep(1.0)
 
 
 def has_executable(container: str, executable: str) -> bool:
