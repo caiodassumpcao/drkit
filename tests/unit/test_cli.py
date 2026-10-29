@@ -15,7 +15,7 @@ from drkit.config import LoadedConfig, Manifest
 from drkit.doctor import Category, Check, Status
 from drkit.errors import ConfigError, DrkitError
 from drkit.orchestrator import BackupReport, RetentionResult
-from drkit.runmanifest import RunManifest, RunSummary
+from drkit.runmanifest import ProjectState, RunManifest, RunSummary
 from drkit.sources.base import ItemResult
 
 cli_runner = CliRunner()
@@ -183,6 +183,9 @@ RUN = RunManifest(
             kind="db", project="shop", name="legacy", status="failed", error="dump [x] failed"
         ),
     ],
+    projects={
+        "shop": ProjectState(sha="9c1e2b7a5d3f00112233", dirty=True, images={"app": "app@sha256:1"})
+    },
 )
 
 
@@ -323,6 +326,7 @@ class TestRuns:
         assert code == 0
         assert requested == ["latest"]
         assert "shop/db/legacy" in out
+        assert "shop: git 9c1e2b7a5d3f (dirty), 1 image(s) pinned" in out
 
         _, out, _ = invoke("--json", "runs", "show", "20261029T030000Z-a1f3")
         assert requested[-1] == "20261029T030000Z-a1f3"

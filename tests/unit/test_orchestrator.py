@@ -16,10 +16,11 @@ from drkit.errors import ConfigError, ExitCode, LockHeldError
 from drkit.lock import acquire
 from drkit.orchestrator import BackupReport
 from drkit.restic import BackupSummary, Restic, Snapshot
-from drkit.runmanifest import RunManifest
+from drkit.runmanifest import ProjectState, RunManifest
 from drkit.sources.base import BackupContext, ItemResult
 from drkit.sources.mysql import MysqlSource
 from drkit.sources.postgres import PostgresSource
+from drkit.sources.project import ProjectSource
 
 T0 = datetime(2026, 10, 29, 3, tzinfo=UTC)
 
@@ -308,6 +309,33 @@ class TestRunBackup:
         assert structlog.contextvars.get_contextvars() == {}
 
 
+class StateProjectSource(ProjectSource):
+    """A project source that succeeds (or fails) without git or Docker."""
+
+    fail = False
+
+    def run(self, ctx: BackupContext) -> dict[str, Any]:
+        if self.fail:
+            raise ConfigError("not a git checkout")
+        self.state = ProjectState(sha="9c1e2b7", images={"app": "app@sha256:1"})
+        return {"snapshot": "files", "bytes": 1}
+
+
+def test_project_state_lands_in_the_run_manifest(
+    tmp_path: Path, webhook: Webhook, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failing = StateProjectSource(MANIFEST.projects[1])
+    failing.fail = True
+    sources: list[Any] = [StateProjectSource(MANIFEST.projects[0]), failing]
+    restic = MemoryRestic()
+
+    report = run(tmp_path, restic, webhook, sources, monkeypatch)
+
+    expected = {"shop": ProjectState(sha="9c1e2b7", images={"app": "app@sha256:1"})}
+    assert report.manifest.projects == expected
+    assert restic.runs()[0].projects == expected
+
+
 class TestRetention:
     def test_drops_whole_runs(self) -> None:
         restic = MemoryRestic()
@@ -343,12 +371,14 @@ class TestRetention:
 
 
 class TestBuildSources:
-    def test_all_databases_in_manifest_order(self) -> None:
+    def test_all_items_in_manifest_order(self) -> None:
         sources = orchestrator.build_sources(MANIFEST)
         assert [(type(s), s.project, s.name) for s in sources] == [
             (PostgresSource, "shop", "shop"),
             (MysqlSource, "shop", "legacy"),
+            (ProjectSource, "shop", "shop"),
             (PostgresSource, "blog", "blog"),
+            (ProjectSource, "blog", "blog"),
         ]
 
     def test_filter_by_project_and_kind(self) -> None:
@@ -380,6 +410,7 @@ class TestBuildSources:
             ("db", "shop"),
             ("db", "legacy"),
             ("volume", "uploads"),
+            ("project", "shop"),
         ]
         assert [s.name for s in orchestrator.build_sources(manifest, kinds=["volume"])] == [
             "uploads"

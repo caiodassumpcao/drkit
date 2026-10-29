@@ -28,7 +28,7 @@ RunStatus = Literal["ok", "partial", "failed"]
 
 
 class ProjectState(BaseModel):
-    """Code and image state of a project at backup time (filled from v0.2)."""
+    """Code and image state of a project at backup time."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -36,6 +36,9 @@ class ProjectState(BaseModel):
     sha: str | None = None
     dirty: bool = False
     images: dict[str, str] = Field(default_factory=dict)
+    """Compose service → image reference, pinned by registry digest when it has one."""
+    patch_snapshot: str | None = None
+    """Snapshot of ``git diff HEAD --binary`` when tracked files had uncommitted changes."""
 
 
 class RunManifest(BaseModel):

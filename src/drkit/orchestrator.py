@@ -27,10 +27,11 @@ from drkit.runner import redact
 from drkit.sources.base import BackupContext, ItemResult, Source
 from drkit.sources.mysql import MysqlSource
 from drkit.sources.postgres import PostgresSource
+from drkit.sources.project import ProjectSource
 from drkit.sources.secrets import SecretsSource
 from drkit.sources.volume import VolumeSource
 
-SUPPORTED_KINDS = ("db", "volume", "secrets")
+SUPPORTED_KINDS = ("db", "volume", "secrets", "project")
 
 log = structlog.get_logger(__name__)
 
@@ -85,6 +86,8 @@ def build_sources(
             sources += [VolumeSource(proj, volume) for volume in proj.volumes]
         if "secrets" in wanted and proj.secrets:
             sources.append(SecretsSource(proj))
+        if "project" in wanted:
+            sources.append(ProjectSource(proj))
     return sources
 
 
@@ -123,6 +126,11 @@ def run_backup(
                 finished_at=datetime.now(UTC),
                 status=run_status(items),
                 items=items,
+                projects={
+                    source.config.name: source.state
+                    for source in sources
+                    if isinstance(source, ProjectSource) and source.state is not None
+                },
             )
             try:
                 repo.backup_bytes(

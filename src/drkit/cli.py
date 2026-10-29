@@ -299,6 +299,11 @@ def _render_run(run: RunManifest) -> None:
             escape(outcome),
         )
     console.print(table)
+    for name, project in run.projects.items():
+        commit = (project.sha or "?")[:12] + (" [yellow](dirty)[/yellow]" if project.dirty else "")
+        console.print(
+            f"{escape(name)}: git {commit}, {len(project.images)} image(s) pinned", highlight=False
+        )
 
 
 def _status(status: str) -> str:
