@@ -11,3 +11,4 @@ supersedes the old one.
 | [0003](0003-drive-docker-through-its-cli.md) | Drive Docker through its CLI instead of the SDK | Accepted |
 | [0004](0004-run-manifest-as-unit-of-restore.md) | Run manifest as the unit of consistent restore | Accepted |
 | [0005](0005-stream-database-dumps-via-stdin.md) | Stream database dumps to restic via stdin | Accepted |
+| [0006](0006-secrets-and-master-key-handling.md) | Secrets and master key handling | Accepted |

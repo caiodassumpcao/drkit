@@ -362,7 +362,8 @@ Drill fails (non-zero) on any mismatch.
 ## 9. Security model
 
 - **Encryption:** restic encrypts all data client-side (AES-256 + Poly1305). TLS in transit to S3.
-- **Master secrets:** `restic.pass` + S3 credentials are the recovery keys. They **must also live outside the server** (password manager / sealed envelope). Losing them = losing the backups. README and runbook must say this prominently.
+- **Master secrets:** `restic.pass` + S3 credentials are the recovery keys. They **must also live outside the server** (password manager / sealed envelope) and are never backed up into the repository they open. Losing them = losing the backups. README and runbook must say this prominently (ADR-0006).
+- **Application secrets** (`projects[].secrets`) are their own `kind:secrets` item, encrypted client-side like all data, separate from the code so a restore can write them back `0600` (ADR-0006).
 - **Least privilege:** S3 key scoped to one bucket/prefix; recommend bucket **object lock / versioning** against ransomware deleting backups (documented, not enforced).
 - **File permissions:** manifest, password and env files must be regular files owned by the effective user running `drkit` (root in production) with no group/other permission bits (e.g. `0600`); `drkit` refuses otherwise. `doctor` applies the same check to deploy keys.
 - **No secrets in output:** `runner.py` redacts env values and known secret patterns (`*PASSWORD*=`, `*TOKEN*=`, credentials in URLs, Telegram bot tokens) from logs, errors and reports. Values passed to commands through `env=`, the env file and secret manifest fields are registered automatically; values shorter than 6 characters are not, to avoid mangling unrelated output. Typer tracebacks never render local variables. Unit-tested.
