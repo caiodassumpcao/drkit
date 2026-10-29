@@ -19,7 +19,7 @@ updates:
       prefix: ci
 
   - package-ecosystem: docker-compose
-    directory: /tests/integration
+    directories: [/tests/integration, /tests/integration/demo]
     schedule:
       interval: weekly
     # The database majors under test are deliberate (one per supported line); moving to a

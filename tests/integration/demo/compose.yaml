@@ -1,0 +1,29 @@
+# Demo project for restore tests: a database, and a web server that serves files from the
+# git checkout (./www) and user uploads from a volume. Settings come from the project's .env,
+# which drkit backs up as a secret. Images are pinned by digest; Dependabot proposes updates.
+services:
+  db:
+    image: postgres:16.9@sha256:ddfe3e8713e3ee5b8f286082cb12512488dfbf3f5a1ecb0b74a42e6055af0a5f
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: shop
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # TCP on purpose: the entrypoint's temporary init server only listens on the socket.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d shop"]
+      interval: 2s
+      retries: 60
+
+  web:
+    image: busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+    command: ["httpd", "-f", "-p", "8080", "-h", "/srv"]
+    ports: ["127.0.0.1:${WEB_PORT}:8080"]
+    volumes:
+      - ./www:/srv/www:ro
+      - uploads:/srv/uploads
+
+volumes:
+  pgdata:
+  uploads:
