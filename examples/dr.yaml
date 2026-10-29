@@ -1,0 +1,78 @@
+# drkit manifest — annotated example.
+#
+# Install as /etc/drkit/dr.yaml (or point --config / $DRKIT_CONFIG elsewhere), owned by root
+# with mode 0600: drkit refuses to run if the manifest, password file or env file is not owned
+# by the user running it or has any group/other permission. `drkit doctor` checks all of this.
+#
+# ${VAR} placeholders are filled from repository.env_file and the process environment (the
+# environment wins). An undefined variable is an error. Use $$ for a literal "$"; unbraced
+# $VARS (e.g. in hooks) are left alone for the shell.
+
+version: 1
+host: prod-01                         # logical host name, used in snapshot tags
+
+repository:
+  url: s3:https://s3.example.com/my-dr-bucket/prod-01
+  password_file: /etc/drkit/restic.pass   # restic key. Keep a copy OUTSIDE this server.
+  env_file: /etc/drkit/env                # KEY=VALUE lines: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, DRKIT_*
+
+retention:                            # applied with `restic forget` after every run (at least one)
+  daily: 7
+  weekly: 4
+  monthly: 6
+
+system:
+  ansible:                            # optional; rebuilds the OS during `restore host`
+    source: https://github.com/caiodassumpcao/server-hardening-kit.git   # git URL or local path
+    ref: v1.0.0                       # pin a tag or commit
+    playbook: site.yml                # relative to the repository root
+    extra_vars: { ssh_port: 2222 }
+    skip_tags: []                     # e.g. [ufw, ssh] for CI drills
+  paths:                              # backed up every run; restored after Ansible if restore: true
+    - path: /etc/nginx
+      restore: true
+    - path: /etc/systemd/system
+      include: ["app-*.service", "app-*.timer"]
+      restore: true
+    - path: /var/spool/cron/crontabs
+      restore: true
+  tls:
+    strategy: reissue                 # reissue (certbot, needs email) | restore (/etc/letsencrypt)
+    email: ops@example.com
+
+projects:
+  - name: artesempreco                # 2-41 chars: lowercase letters, digits, '-'
+    path: /srv/artesempreco           # absolute
+    git:
+      remote: git@github.com:caiodassumpcao/artesempreco.git
+      deploy_key: /etc/drkit/keys/artesempreco   # optional, for private repos (mode 0600)
+    compose:
+      project_name: artesempreco      # defaults to the project name
+      files: [docker-compose.yml, docker-compose.prod.yml]   # relative to path
+    secrets: [.env]                   # relative to path, cannot escape it with '..'
+    databases:
+      - engine: postgres              # postgres | mysql
+        service: db                   # compose service name
+        database: artes
+        user_env: POSTGRES_USER       # container env var with the DB user
+                                      # (default: POSTGRES_USER / MYSQL_USER)
+        # verify_query: SELECT count(*) FROM users   # optional extra check for `drkit verify`
+    volumes:
+      - name: uploads                 # compose volume name (resolved via compose labels)
+        consistency: live             # live | stop (stop the services using it during backup)
+    hooks:                            # run by a shell, as root, from the project directory
+      pre_backup: []
+      post_backup: []                 # always run, even if the backup failed
+      post_restore: ["docker compose exec -T app php artisan migrate --force"]
+    healthchecks:
+      - url: http://127.0.0.1:8080/health
+        expect_status: 200            # default 200
+        timeout: 90                   # seconds, with exponential backoff (default 60)
+
+notifications:                        # optional
+  on: [failure]                       # failure | success
+  telegram:
+    bot_token: ${DRKIT_TG_TOKEN}
+    chat_id: "123456789"
+  webhook:
+    url: ${DRKIT_WEBHOOK_URL}         # Slack-compatible JSON {"text": ...}
