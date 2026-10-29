@@ -133,6 +133,11 @@ def stream_dump(
     )
 
 
+def dump_filename(project: str | None, database: str, extension: str) -> str:
+    """Path of a database dump inside its snapshot, without the leading ``/``."""
+    return f"{project}/db/{database}.{extension}"
+
+
 class BaseSource(ABC):
     """Template for sources: time the item and turn expected failures into a failed item."""
 
@@ -202,7 +207,7 @@ class DatabaseSource(BaseSource):
         return {"engine": self.engine}
 
     def filename(self, extension: str) -> str:
-        return f"{self.project}/db/{self.name}.{extension}"
+        return dump_filename(self.project, self.name, extension)
 
     def run(self, ctx: BackupContext) -> dict[str, Any]:
         container = docker.compose_container(self.compose_project, self.database.service)

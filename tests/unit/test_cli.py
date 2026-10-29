@@ -17,6 +17,7 @@ from drkit.errors import ConfigError, DrkitError
 from drkit.orchestrator import BackupReport, RetentionResult
 from drkit.runmanifest import ProjectState, RunManifest, RunSummary
 from drkit.sources.base import ItemResult
+from drkit.verify import DatabaseCheck, VerifyReport
 
 cli_runner = CliRunner()
 
@@ -361,3 +362,64 @@ class TestRuns:
 )
 def test_human_bytes(size: int, text: str) -> None:
     assert cli._human_bytes(size) == text
+
+
+class TestVerify:
+    REPORT = VerifyReport(
+        run_id="20261029T030000Z-a1f3",
+        repository_error="pack 1a2b is damaged",
+        databases=[
+            DatabaseCheck("shop/db/shop", "postgres", "postgres:16", "ok", 4, 9.5),
+            DatabaseCheck("shop/db/legacy", "mysql", "mysql:8.4", "failed", None, 3.0, "[boom]"),
+        ],
+        errors=["state: cannot write"],
+    )
+
+    @pytest.fixture
+    def calls(self, monkeypatch: pytest.MonkeyPatch, loaded: list[Path]) -> list[dict[str, object]]:
+        calls: list[dict[str, object]] = []
+
+        def run_verify(loaded: LoadedConfig, **kwargs: object) -> VerifyReport:
+            calls.append(kwargs)
+            return self.REPORT
+
+        monkeypatch.setattr(cli, "run_verify", run_verify)
+        return calls
+
+    def test_renders_checks(self, calls: list[dict[str, object]]) -> None:
+        code, out, err = invoke("verify", "--run", "20261029T030000Z-a1f3")
+        assert code == 1
+        assert calls == [{"run_id": "20261029T030000Z-a1f3", "read_data_subset": "5%"}]
+        assert "repository check: pack 1a2b is damaged" in out
+        assert "postgres:16" in out
+        assert "[boom]" in out
+        assert "warning: state: cannot write" in err
+
+    def test_json_and_structure_only_check(self, calls: list[dict[str, object]]) -> None:
+        code, out, _ = invoke("--json", "verify", "--read-data-subset", "0")
+        assert calls == [{"run_id": "latest", "read_data_subset": None}]
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert [db["status"] for db in payload["databases"]] == ["ok", "failed"]
+        assert code == 1
+
+    def test_clean_run_without_databases(
+        self, calls: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self.REPORT = VerifyReport(run_id="r", repository_error=None)
+        code, out, _ = invoke("verify")
+        assert code == 0
+        assert "✓ repository check" in out
+        assert "No database in this run." in out
+
+    @pytest.mark.parametrize("value", ["5%", "2.5%", "1/7", "500M", "2G", "100"])
+    def test_accepted_subsets(self, calls: list[dict[str, object]], value: str) -> None:
+        invoke("verify", "--read-data-subset", value)
+        assert calls[-1]["read_data_subset"] == value
+
+    @pytest.mark.parametrize("value", ["five", "5%%", "-1", "1/"])
+    def test_rejected_subsets(self, calls: list[dict[str, object]], value: str) -> None:
+        code, _, err = invoke("verify", "--read-data-subset", value)
+        assert code == 2
+        assert "use a percentage" in err
+        assert calls == []

@@ -70,3 +70,13 @@ def test_state_dir_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert state.state_dir() == tmp_path
     state.save(state.State())
     assert (tmp_path / "state.json").exists()
+
+
+def test_record_verify_keeps_the_run_records(tmp_path: Path) -> None:
+    state.record_run(manifest("r1", "ok"), tmp_path)
+    current = state.record_verify("r1", "failed", tmp_path)
+    assert current.last_verify is not None
+    assert (current.last_verify.run_id, current.last_verify.status) == ("r1", "failed")
+    assert current.last_success is not None
+    reloaded = state.record_run(manifest("r2", "ok"), tmp_path)
+    assert reloaded.last_verify == current.last_verify

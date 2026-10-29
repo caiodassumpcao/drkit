@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import os
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -39,12 +40,21 @@ class RunRecord(BaseModel):
         )
 
 
+class VerifyRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    run_id: str
+    status: Literal["ok", "failed"]
+    finished_at: datetime
+
+
 class State(BaseModel):
     # Unknown keys are dropped rather than rejected: a newer drkit may have written them.
     model_config = ConfigDict(extra="ignore")
 
     last_run: RunRecord | None = None
     last_success: RunRecord | None = None
+    last_verify: VerifyRecord | None = None
 
 
 def state_dir() -> Path:
@@ -87,9 +97,20 @@ def save(state: State, directory: Path | None = None) -> Path:
 def record_run(manifest: RunManifest, directory: Path | None = None) -> State:
     current = load(directory)
     record = RunRecord.from_manifest(manifest)
-    updated = State(
-        last_run=record,
-        last_success=record if manifest.status == "ok" else current.last_success,
+    updated = current.model_copy(
+        update={
+            "last_run": record,
+            "last_success": record if manifest.status == "ok" else current.last_success,
+        }
     )
+    save(updated, directory)
+    return updated
+
+
+def record_verify(
+    run_id: str, status: Literal["ok", "failed"], directory: Path | None = None
+) -> State:
+    record = VerifyRecord(run_id=run_id, status=status, finished_at=datetime.now(UTC))
+    updated = load(directory).model_copy(update={"last_verify": record})
     save(updated, directory)
     return updated

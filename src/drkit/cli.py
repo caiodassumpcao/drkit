@@ -28,6 +28,7 @@ from drkit.errors import DrkitError
 from drkit.orchestrator import SUPPORTED_KINDS, restic_for, run_backup
 from drkit.runmanifest import RunManifest, list_runs, load_run
 from drkit.runner import redact, redactor
+from drkit.verify import DEFAULT_READ_DATA_SUBSET, READ_DATA_SUBSET_RE, run_verify
 
 app = typer.Typer(
     name="drkit",
@@ -224,6 +225,78 @@ def backup_command(
                 f"Retention: dropped {len(report.retention.removed_runs)} run(s), "
                 f"{report.retention.forgotten_snapshots} snapshot(s)."
             )
+        for error in [*report.errors, *(f"notification {e}" for e in report.notify_errors)]:
+            err_console.print(f"[yellow]warning:[/yellow] {escape(redact(error))}")
+    raise typer.Exit(int(report.exit_code))
+
+
+def _read_data_subset(value: str) -> str:
+    if value != "0" and not READ_DATA_SUBSET_RE.match(value):
+        raise typer.BadParameter(
+            "use a percentage (5%), a fraction (1/7) or a size (2G); 0 skips it"
+        )
+    return value
+
+
+@app.command("verify")
+@handle_errors
+def verify_command(
+    ctx: typer.Context,
+    run_id: Annotated[str, typer.Option("--run", help="Run ID, or 'latest'.")] = "latest",
+    read_data_subset: Annotated[
+        str,
+        typer.Option(
+            "--read-data-subset",
+            callback=_read_data_subset,
+            help="Share of the repository data restic reads back and checks (0: structure only).",
+        ),
+    ] = DEFAULT_READ_DATA_SUBSET,
+) -> None:
+    """Check repository integrity and restore every database of a run into a throwaway container."""
+    options: Options = ctx.obj
+    loaded = _load(options)
+    report = run_verify(
+        loaded,
+        run_id=run_id,
+        read_data_subset=None if read_data_subset == "0" else read_data_subset,
+    )
+
+    if options.json:
+        _echo_json(
+            {
+                "run_id": report.run_id,
+                "ok": report.ok,
+                "repository_error": report.repository_error,
+                "databases": [asdict(db) for db in report.databases],
+                "errors": report.errors,
+                "notify_errors": report.notify_errors,
+            }
+        )
+    else:
+        console.print(f"Verify of run [bold]{report.run_id}[/bold]")
+        if report.repository_error is None:
+            console.print(f"{_STATUS_STYLE[doctor.Status.OK]} repository check")
+        else:
+            console.print(
+                f"{_STATUS_STYLE[doctor.Status.FAIL]} repository check: "
+                f"{escape(redact(report.repository_error))}"
+            )
+        table = Table(box=None, pad_edge=False, header_style="bold")
+        for column in ("", "Database", "Image", "Tables", "Time", "Error"):
+            table.add_column(column, overflow="fold")
+        for db in report.databases:
+            table.add_row(
+                _STATUS_STYLE[doctor.Status.OK if db.status == "ok" else doctor.Status.FAIL],
+                escape(db.label),
+                escape(db.image or ""),
+                "" if db.tables is None else str(db.tables),
+                f"{db.duration_s:.1f}s",
+                escape(redact(db.error or "")),
+            )
+        if report.databases:
+            console.print(table)
+        else:
+            console.print("No database in this run.")
         for error in [*report.errors, *(f"notification {e}" for e in report.notify_errors)]:
             err_console.print(f"[yellow]warning:[/yellow] {escape(redact(error))}")
     raise typer.Exit(int(report.exit_code))

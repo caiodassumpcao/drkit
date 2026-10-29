@@ -294,9 +294,11 @@ Snapshot IDs are full restic IDs. `status` is `ok` (all items ok), `partial` (so
 
 `drkit verify [--run latest|<id>] [--read-data-subset 5%]`
 
-1. `restic check --read-data-subset=<n>`.
-2. For each `db` item of the run: start an **ephemeral container with the same engine major version** (`postgres:<major>` / `mysql:<major>`), restore the dump into it, run sanity queries (connect, count tables > 0, optional `verify_query` from the manifest), destroy it.
-3. Record result in `state.json`; notify on failure.
+1. `restic check --read-data-subset=<n>` (default `5%`, so the whole repository is read back over a few weeks of daily runs; `0` checks the structure only). A failed check is reported, and the restore tests still run.
+2. For each `db` item of the run with status `ok`: start an **ephemeral container of the same engine and version line** — `postgres:<major>`, `mysql:<major.minor>`, `mariadb:<major.minor>` (MySQL 8.0/8.4 and MariaDB 10.11/11.4 are different lines) — with `--network none` (the data is a copy of production; local trust / empty root password are then safe), restore into it (PostgreSQL: roles from `globals_snapshot`, then `pg_restore --exit-on-error`; MySQL: `mysql <db>`), run sanity queries (count tables > 0, optional `verify_query` from the manifest), and always remove it.
+3. Record the result in `state.json` (`last_verify`) and notify (`failure`, or `success` if configured).
+
+Verify takes no drkit lock: restic's own locks keep `check` safe next to a backup, and a long restore test must not make the hourly backup fail with "lock held". Exit code `0` when everything passed, `1` otherwise.
 
 ---
 
