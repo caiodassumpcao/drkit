@@ -226,36 +226,38 @@ Validation rules (must have unit tests):
 
 ### 5.1 Run sequence
 
-1. Acquire lock (`/run/drkit.lock`, non-blocking → exit code 3 if held).
-2. Load + validate manifest, check dependencies (`restic`, `docker`, `git`).
+1. Acquire lock (`/run/drkit.lock`, override with `$DRKIT_LOCK_FILE`; non-blocking → exit code 3 if held).
+2. Load + validate manifest, open the repository (`restic cat config`). If the run cannot start (repository missing or unreachable), a failure notification is sent and nothing is written.
 3. Generate `run_id`, start timers.
 4. For each project: `pre_backup` hooks.
 5. Back up items (one restic snapshot each, see §5.2). A failing item **does not abort** the run; it is recorded as failed.
 6. For each project: `post_backup` hooks (always run, even after failures, `finally` semantics).
-7. Write run manifest as a `kind:meta` snapshot.
-8. `restic forget` with retention, grouped by `host,tags` (no prune — prune is a separate weekly command).
-9. Update `state.json`, emit report, send notifications.
-10. Exit code: `0` all ok · `1` partial failure.
+7. Write run manifest as a `kind:meta` snapshot. If this fails the run is reported as failed: without its manifest it cannot be restored as a set.
+8. Retention **per run** (ADR-0004): the policy is evaluated with `restic forget --dry-run --group-by host` over the `kind:meta` snapshots; every snapshot of each discarded run (`--tag run:<id>`) is then forgotten. The current run is never discarded. No prune — prune is a separate weekly command.
+9. Update `state.json` (`$DRKIT_STATE_DIR`, default `/var/lib/drkit`), emit report, send notifications (`success` or `failure`, per `notifications.on`; delivery failures are logged, never change the exit code).
+10. Exit code: `0` all ok · `1` partial failure (an item failed, or retention / state update failed).
 
 ### 5.2 Items
 
 | Kind | How | restic call |
 |---|---|---|
-| `db` (postgres) | `docker exec <ctr> pg_dump -U <user> -Fc <db>` + `pg_dumpall --globals-only` | `restic backup --stdin --stdin-filename <project>/db/<db>.dump` (streamed, no temp file — ADR-0005) |
-| `db` (mysql) | `docker exec -e MYSQL_PWD <ctr> mysqldump --single-transaction --routines --triggers --events <db>` | same, `<db>.sql` |
+| `db` (postgres) | `docker exec <ctr> pg_dump -U <user> -Fc <db>` + `pg_dumpall -U <user> --globals-only` (roles); user from `$<user_env>` in the container, version from `SHOW server_version` | `restic backup --stdin --stdin-filename <project>/db/<db>.dump` (streamed, no temp file — ADR-0005), and `<db>.globals.sql` as a second snapshot of the same item (`globals_snapshot`) |
+| `db` (mysql) | `docker exec -e MYSQL_PWD <ctr> mysqldump -u <user> --single-transaction --routines --triggers --events --no-tablespaces <db>`; user and password from `$<user_env>` / `$<password_env>` in the container, password handed over through drkit's environment (never argv); `mariadb-dump` / `mariadb` when the image has them (MariaDB 11) | same, `<db>.sql` |
 | `volume` | resolve mountpoint via `docker volume ls --filter label=com.docker.compose.project=<p> --filter label=com.docker.compose.volume=<v>` + `docker volume inspect` | `restic backup <mountpoint>` |
 | `secrets` | project-relative files | `restic backup <files>` |
 | `project` | git remote, HEAD SHA, dirty flag, `git diff` patch if dirty (warning), compose files, `docker compose images --format json` digests | files + JSON |
 | `system` | configured `paths` + `dpkg --get-selections`, `apt-mark showmanual`, OS release (inventory only) | paths + JSON |
 | `meta` | run manifest | `--stdin-filename runs/<run_id>.json` |
 
-**Streaming correctness:** when piping `dump → restic --stdin`, both exit codes must be checked. If the dump fails but restic succeeds, the produced snapshot is **forgotten immediately** and the item is marked failed. Must be covered by an integration test.
+**Streaming correctness:** when piping `dump → restic --stdin`, both exit codes must be checked. If the dump fails but restic succeeds, the produced snapshot is **forgotten immediately** and the item is marked failed. If the PostgreSQL globals dump fails, the database dump snapshot is forgotten too: an item is complete or absent. Covered by an integration test.
+
+Containers are resolved by compose labels (`docker ps --filter label=com.docker.compose.project=<p> --filter label=com.docker.compose.service=<s>`), so the compose files are not needed to back up. Every restic call passes `--host <host>`, so snapshots belong to the logical host, not to the machine's hostname.
 
 **Volume consistency:** `consistency: stop` stops only the compose services mounting the volume, backs up, then starts them again in a `finally` block.
 
 ### 5.3 Tags
 
-Every snapshot carries: `drkit`, `host:<host>`, `run:<run_id>`, `kind:<kind>`, and when applicable `project:<name>`, `db:<name>`, `volume:<name>`.
+Every snapshot carries: `drkit`, `host:<host>`, `run:<run_id>`, `kind:<kind>`, and when applicable `project:<name>`, `db:<name>`, `volume:<name>`. The `kind:meta` snapshot also carries `status:<ok|partial|failed>`, so `runs list` needs no manifest download.
 
 ### 5.4 Run manifest schema
 
@@ -270,7 +272,8 @@ Every snapshot carries: `drkit`, `host:<host>`, `run:<run_id>`, `kind:<kind>`, a
   "status": "ok",
   "items": [
     {"kind": "db", "project": "artesempreco", "name": "artes", "engine": "postgres",
-     "engine_version": "16.4", "snapshot": "3f2a9c1d", "bytes": 48213, "duration_s": 3.2, "status": "ok"}
+     "engine_version": "16.4", "snapshot": "3f2a9c1d…", "globals_snapshot": "8b0e44f2…",
+     "bytes": 48213, "duration_s": 3.2, "status": "ok", "error": null}
   ],
   "projects": {
     "artesempreco": {"remote": "git@github.com:...", "sha": "9c1e2b7", "dirty": false,
@@ -278,6 +281,8 @@ Every snapshot carries: `drkit`, `host:<host>`, `run:<run_id>`, `kind:<kind>`, a
   }
 }
 ```
+
+Snapshot IDs are full restic IDs. `status` is `ok` (all items ok), `partial` (some failed) or `failed` (all failed); failed items carry `error` (redacted) and no snapshot. Readers reject unknown fields and schema versions.
 
 ### 5.5 Scheduling
 
@@ -369,7 +374,8 @@ Drill fails (non-zero) on any mismatch.
 - Logs: structlog JSON (`event`, `run_id`, `item`, `duration_s`, `status`) to stderr → journald (human-readable on a TTY). stdout is reserved for command output, so `--json` stays machine-parseable. Every log value passes through the redactor.
 - `state.json`: last run/verify/drill status and timestamps.
 - `drkit report [--format md|json]`: last N runs, sizes, durations, current RPO, last verify, last drill RTO.
-- Exit codes: `0` ok · `1` partial failure · `2` config error · `3` lock held · `4` missing dependency · `5` restore aborted.
+- Exit codes: `0` ok · `1` partial failure · `2` config error · `3` lock held · `4` missing dependency · `5` restore aborted. `doctor` reports the most important failure: config/permissions (`2`), then dependencies (`4`), then repository access (`1`).
+- Environment overrides (tests, unprivileged development): `DRKIT_CONFIG`, `DRKIT_STATE_DIR`, `DRKIT_LOCK_FILE`.
 
 ---
 
@@ -395,7 +401,7 @@ Drill fails (non-zero) on any mismatch.
 | Level | Tooling | Scope |
 |---|---|---|
 | Unit | pytest, ≥ 85 % coverage on non-IO modules | config validation, tag/command building, redaction, run manifest, retention args, step pipeline |
-| Integration | pytest marker `integration`, Docker Compose fixtures (MinIO, Postgres, MySQL) | each source backs up and restores; dump-failure handling; volume consistency |
+| Integration | pytest marker `integration`, Docker Compose fixtures (`tests/integration/compose.yaml`: MinIO via the community `pgsty/minio` build since upstream images are no longer published, PostgreSQL, MySQL, MariaDB), run with `--no-cov` in CI | each source backs up and restores; dump-failure handling; retention; volume consistency |
 | End-to-end | `drkit drill --local` in CI | full host recovery |
 | Static | ruff (lint + format), mypy `--strict` | everything |
 
