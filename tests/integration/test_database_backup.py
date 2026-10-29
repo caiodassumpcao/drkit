@@ -146,6 +146,8 @@ def test_doctor_checks_repository_access(make_drkit: Any) -> None:
     checks = {c["category"]: c for c in json.loads(result.stdout)["checks"]}
     assert checks["repository"]["status"] == "ok"
     assert result.exit_code == 0, result.stdout
+    projects = {c["name"]: c["status"] for c in json.loads(result.stdout)["checks"]}
+    assert projects["shop: service db"] == "ok"
 
 
 def test_init_is_idempotent(make_drkit: Any) -> None:

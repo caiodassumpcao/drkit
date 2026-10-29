@@ -376,7 +376,7 @@ Drill fails (non-zero) on any mismatch.
 - Logs: structlog JSON (`event`, `run_id`, `item`, `duration_s`, `status`) to stderr → journald (human-readable on a TTY). stdout is reserved for command output, so `--json` stays machine-parseable. Every log value passes through the redactor.
 - `state.json`: last run/verify/drill status and timestamps.
 - `drkit report [--format md|json] [--limit 10]`: last N runs (status, items, size, duration — read from their run manifests), current RPO (time since the last `ok` run, from the repository), last verify (from `state.json`), last drill RTO (from v1.0). Markdown by default, so it can be pasted into an issue or a status page.
-- Exit codes: `0` ok · `1` partial failure · `2` config error · `3` lock held · `4` missing dependency · `5` restore aborted. `doctor` reports the most important failure: config/permissions (`2`), then dependencies (`4`), then repository access (`1`).
+- Exit codes: `0` ok · `1` partial failure · `2` config error · `3` lock held · `4` missing dependency · `5` restore aborted. `doctor` reports the most important failure: config/permissions (`2`), then dependencies (`4`), then repository access or project checks — directory present, database services running, volumes created (`1`).
 - Environment overrides (tests, unprivileged development): `DRKIT_CONFIG`, `DRKIT_STATE_DIR`, `DRKIT_LOCK_FILE`.
 
 ---

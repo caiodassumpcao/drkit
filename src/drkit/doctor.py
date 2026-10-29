@@ -13,8 +13,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from drkit import runner
-from drkit.config import LoadedConfig, check_private_file, load_config
+from drkit import docker, runner
+from drkit.config import LoadedConfig, Project, check_private_file, load_config
 from drkit.errors import (
     CommandTimeoutError,
     ConfigError,
@@ -32,6 +32,7 @@ class Category(StrEnum):
     PERMISSIONS = "permissions"
     DEPENDENCIES = "dependencies"
     REPOSITORY = "repository"
+    PROJECTS = "projects"
 
 
 class Status(StrEnum):
@@ -140,12 +141,51 @@ def run_checks(config_path: Path, *, environ: Mapping[str, str] | None = None) -
     dependency_checks += [check_dependency(dep, required=False) for dep in optional]
     checks.extend(dependency_checks)
 
-    restic_ok = any(c.name == RESTIC.name and c.status is Status.OK for c in dependency_checks)
-    if loaded is not None and restic_ok:
+    def available(dependency: Dependency) -> bool:
+        return any(c.name == dependency.name and c.status is Status.OK for c in dependency_checks)
+
+    if loaded is not None and available(RESTIC):
         manifest = loaded.manifest
         checks.append(
             check_repository(Restic(manifest.repository, host=manifest.host, env=loaded.env))
         )
+    if loaded is not None and available(DOCKER):
+        for project in loaded.manifest.projects:
+            checks.extend(check_project(project))
+    return checks
+
+
+def check_project(project: Project) -> list[Check]:
+    """The project directory exists, its database services run and its volumes exist."""
+
+    def result(name: str, status: Status, detail: str, hint: str | None = None) -> Check:
+        return Check(Category.PROJECTS, f"{project.name}: {name}", status, detail, hint)
+
+    checks = [
+        result("directory", Status.OK, str(project.path))
+        if project.path.is_dir()
+        else result(
+            "directory",
+            Status.FAIL,
+            f"{project.path} not found",
+            "clone the project there, or fix projects[].path",
+        )
+    ]
+    compose_project = project.compose_project
+    for service in dict.fromkeys(db.service for db in project.databases):
+        try:
+            docker.compose_container(compose_project, service)
+        except DrkitError as exc:
+            checks.append(result(f"service {service}", Status.FAIL, exc.message, exc.hint))
+        else:
+            checks.append(result(f"service {service}", Status.OK, "running"))
+    for volume in project.volumes:
+        try:
+            name = docker.compose_volume(compose_project, volume.name)
+        except DrkitError as exc:
+            checks.append(result(f"volume {volume.name}", Status.FAIL, exc.message, exc.hint))
+        else:
+            checks.append(result(f"volume {volume.name}", Status.OK, name))
     return checks
 
 
@@ -206,13 +246,14 @@ def check_dependency(dependency: Dependency, *, required: bool = True) -> Check:
 
 
 def exit_code(checks: Iterable[Check]) -> ExitCode:
-    """Configuration problems first, then missing dependencies, then repository access."""
+    """Configuration problems first, then missing dependencies, then the rest (repository
+    access, project services)."""
     failed = {c.category for c in checks if c.status is Status.FAIL}
     if failed & {Category.MANIFEST, Category.PERMISSIONS}:
         return ExitCode.CONFIG_ERROR
     if Category.DEPENDENCIES in failed:
         return ExitCode.MISSING_DEPENDENCY
-    if Category.REPOSITORY in failed:
+    if failed:
         return ExitCode.PARTIAL_FAILURE
     return ExitCode.OK
 

@@ -198,7 +198,7 @@ def make_drkit(tmp_path: Path, stack: Stack, monkeypatch: pytest.MonkeyPatch) ->
             "projects": [
                 {
                     "name": name,
-                    "path": f"/srv/{name}",
+                    "path": str(_project_dir(tmp_path, name)),
                     "git": {"remote": f"git@example.com:{name}.git"},
                     "compose": {"project_name": stack.project, "files": ["compose.yaml"]},
                     "databases": databases.get(name, []),
@@ -219,6 +219,12 @@ def make_drkit(tmp_path: Path, stack: Stack, monkeypatch: pytest.MonkeyPatch) ->
 
     yield make
     runner.redactor.clear()
+
+
+def _project_dir(tmp_path: Path, name: str) -> Path:
+    path = tmp_path / "projects" / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _private(path: Path, content: str) -> Path:

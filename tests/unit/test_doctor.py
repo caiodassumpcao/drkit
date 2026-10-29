@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from drkit import doctor, runner
+from drkit import docker, doctor, runner
 from drkit.doctor import Category, Check, Status
-from drkit.errors import CommandTimeoutError, ExitCode, MissingDependencyError
+from drkit.errors import CommandTimeoutError, DrkitError, ExitCode, MissingDependencyError
 from drkit.runner import CommandResult
 
 HEALTHY: dict[str, str | BaseException] = {
@@ -203,6 +203,7 @@ def test_exit_code_precedence() -> None:
         is ExitCode.MISSING_DEPENDENCY
     )
 
+    assert doctor.exit_code([check(Category.PROJECTS, Status.FAIL)]) is ExitCode.PARTIAL_FAILURE
     assert doctor.exit_code([]) is ExitCode.OK
     assert doctor.exit_code([check(Category.DEPENDENCIES, Status.WARN)]) is ExitCode.OK
     assert (
@@ -273,3 +274,74 @@ retention: {{daily: 7}}
         write_private(tmp_path / "pw", "pw")
         names = [c.name for c in doctor.run_checks(manifest, environ={})]
         assert "s3:https://key:***@s3.example.com/b" in names
+
+
+@pytest.mark.usefixtures("healthy")
+class TestProjectChecks:
+    @pytest.fixture
+    def with_project(self, manifest: Path, tmp_path: Path) -> Path:
+        (tmp_path / "shop").mkdir()
+        manifest.write_text(
+            manifest.read_text()
+            + f"""
+projects:
+  - name: shop
+    path: {tmp_path / "shop"}
+    git: {{remote: "git@example.com:shop.git"}}
+    compose: {{project_name: shop-prod, files: [compose.yaml]}}
+    databases:
+      - {{engine: postgres, service: db, database: shop}}
+      - {{engine: postgres, service: db, database: reports}}
+      - {{engine: mysql, service: mysql, database: legacy}}
+    volumes: [{{name: uploads}}]
+"""
+        )
+        return manifest
+
+    def test_services_and_volumes(
+        self, with_project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def compose_container(project: str, service: str) -> str:
+            calls.append((project, service))
+            if service == "mysql":
+                raise docker.ServiceNotRunningError("service 'mysql' has no running container")
+            return "ctr"
+
+        monkeypatch.setattr(docker, "compose_container", compose_container)
+        monkeypatch.setattr(docker, "compose_volume", lambda project, volume: f"{project}_{volume}")
+
+        checks = doctor.run_checks(with_project, environ={})
+
+        projects = {c.name: c for c in checks if c.category is Category.PROJECTS}
+        assert {name: (c.status, c.detail) for name, c in projects.items()} == {
+            "shop: directory": (Status.OK, str(with_project.parent / "shop")),
+            "shop: service db": (Status.OK, "running"),
+            "shop: service mysql": (Status.FAIL, "service 'mysql' has no running container"),
+            "shop: volume uploads": (Status.OK, "shop-prod_uploads"),
+        }
+        assert calls == [("shop-prod", "db"), ("shop-prod", "mysql")]
+        assert doctor.exit_code(checks) is ExitCode.PARTIAL_FAILURE
+
+    def test_missing_directory_and_volume(
+        self, with_project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (with_project.parent / "shop").rmdir()
+        monkeypatch.setattr(docker, "compose_container", lambda project, service: "ctr")
+
+        def compose_volume(project: str, volume: str) -> str:
+            raise DrkitError("volume 'uploads' not found", hint="docker compose up")
+
+        monkeypatch.setattr(docker, "compose_volume", compose_volume)
+        projects = by_name(doctor.run_checks(with_project, environ={}))
+        assert projects["shop: directory"].status is Status.FAIL
+        assert projects["shop: volume uploads"].hint == "docker compose up"
+
+    def test_skipped_without_docker(
+        self, with_project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        without_docker = {k: v for k, v in HEALTHY.items() if k != "docker version"}
+        monkeypatch.setattr(runner, "run", fake_run(without_docker))
+        checks = doctor.run_checks(with_project, environ={})
+        assert not [c for c in checks if c.category is Category.PROJECTS]
