@@ -561,6 +561,14 @@ class TestHooks:
         [error] = orchestrator.run_hooks(shop, "post_backup")
         assert error.startswith("post_backup hook failed: command timed out after 0.2s")
 
+    def test_hooks_in_another_directory(self, tmp_path: Path) -> None:
+        restored = tmp_path / "restored"
+        restored.mkdir()
+        hooks = Hooks(post_restore=["touch migrated"])
+        shop = MANIFEST.projects[0].model_copy(update={"path": tmp_path / "gone", "hooks": hooks})
+        assert orchestrator.run_hooks(shop, "post_restore", directory=restored) == []
+        assert (restored / "migrated").exists()
+
     def test_hook_output_is_redacted(self, tmp_path: Path) -> None:
         hooks = Hooks(pre_backup=["echo TOKEN=abc123xyz >&2; false"])
         shop = MANIFEST.projects[0].model_copy(update={"path": tmp_path, "hooks": hooks})

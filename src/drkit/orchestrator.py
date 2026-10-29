@@ -45,7 +45,7 @@ HOOK_TIMEOUT_S = 1800.0
 # host name during a recovery) is never touched.
 ORPHAN_MIN_AGE = timedelta(hours=24)
 
-HookStage = Literal["pre_backup", "post_backup"]
+HookStage = Literal["pre_backup", "post_backup", "post_restore"]
 
 log = structlog.get_logger(__name__)
 
@@ -288,8 +288,15 @@ def _backup_project(
         errors += [f"{project.name}: {error}" for error in run_hooks(project, "post_backup")]
 
 
-def run_hooks(project: Project, stage: HookStage, *, stop_on_failure: bool = False) -> list[str]:
-    """Run the ``stage`` hooks of ``project`` with ``sh -c`` from its directory.
+def run_hooks(
+    project: Project,
+    stage: HookStage,
+    *,
+    stop_on_failure: bool = False,
+    directory: Path | None = None,
+) -> list[str]:
+    """Run the ``stage`` hooks of ``project`` with ``sh -c`` from its directory (or from
+    ``directory``, where a restore put it).
 
     Returns one error message per failed hook. Hooks are trusted input: they come from the
     manifest, which only its owner can write (DESIGN §9).
@@ -297,23 +304,23 @@ def run_hooks(project: Project, stage: HookStage, *, stop_on_failure: bool = Fal
     commands: list[str] = getattr(project.hooks, stage)
     errors: list[str] = []
     for command in commands:
-        error = _run_hook(project, stage, command)
+        error = _run_hook(project, stage, command, directory or project.path)
         if error is None:
             continue
-        log.error("backup.hook_failed", project=project.name, stage=stage, error=error)
+        log.error("hook.failed", project=project.name, stage=stage, error=error)
         errors.append(error)
         if stop_on_failure:
             break
     return errors
 
 
-def _run_hook(project: Project, stage: HookStage, command: str) -> str | None:
-    if not project.path.is_dir():
-        return f"{stage} hook not run: project directory {project.path} does not exist"
-    log.info("backup.hook", project=project.name, stage=stage)
+def _run_hook(project: Project, stage: HookStage, command: str, directory: Path) -> str | None:
+    if not directory.is_dir():
+        return f"{stage} hook not run: project directory {directory} does not exist"
+    log.info("hook.run", project=project.name, stage=stage)
     try:
         result = runner.run(
-            ["/bin/sh", "-c", command], timeout=HOOK_TIMEOUT_S, cwd=project.path, check=False
+            ["/bin/sh", "-c", command], timeout=HOOK_TIMEOUT_S, cwd=directory, check=False
         )
     except DrkitError as exc:
         return f"{stage} hook failed: {exc.message}"
