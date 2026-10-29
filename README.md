@@ -112,7 +112,7 @@ sudo chmod 600 /etc/drkit/dr.yaml && sudoedit /etc/drkit/dr.yaml
 sudo drkit doctor
 sudo drkit init
 sudo drkit backup
-sudo drkit verify
+sudo drkit runs list
 ```
 
 ### Minimal manifest
@@ -147,9 +147,17 @@ Full reference: [`docs/configuration.md`](docs/configuration.md) · Annotated ex
 ### Schedule it
 
 ```bash
-sudo cp examples/systemd/drkit-*.{service,timer} /etc/systemd/system/
+sudo cp examples/systemd/drkit-backup.{service,timer} /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now drkit-backup.timer drkit-verify.timer drkit-prune.timer
+sudo systemctl enable --now drkit-backup.timer
+```
+
+Verify and prune timers ship with v0.2. Logs go to the journal (`journalctl -u drkit-backup`);
+add `--json` to any command for machine-readable output.
+
+```bash
+sudo drkit runs list            # recent runs and their status
+sudo drkit runs show latest     # items, sizes, snapshot IDs, errors
 ```
 
 ## Restoring
@@ -214,7 +222,7 @@ drkit is built for **Ubuntu servers running Docker Compose projects** with datab
 ## Roadmap
 
 - [x] Foundation — CLI, manifest validation, `doctor`
-- [ ] **v0.1** — Database backup, retention, alerts
+- [x] **v0.1** — Database backup, retention, alerts
 - [ ] **v0.2** — Volumes, secrets, project state, system paths, verification
 - [ ] **v0.3** — Database and project restore
 - [ ] **v0.4** — Full host restore with Ansible
