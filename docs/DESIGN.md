@@ -96,10 +96,11 @@ src/drkit/
 ├── cli.py               # typer app, command wiring, exit codes
 ├── config.py            # pydantic models for dr.yaml, env interpolation, validation
 ├── errors.py            # exception hierarchy → exit codes
-├── logging.py           # structlog setup
+├── logging.py           # structlog setup (stderr), redaction processor
 ├── runner.py            # subprocess wrapper: timeouts, streaming pipes, secret redaction
 ├── lock.py              # fcntl lock on /run/drkit.lock
 ├── state.py             # /var/lib/drkit/state.json (last run, last verify, last drill)
+├── doctor.py            # environment checks behind `drkit doctor` (results only; rendering in cli.py)
 ├── restic.py            # restic wrapper: init, backup (paths/stdin), dump, restore, forget, prune, check, snapshots
 ├── docker.py            # compose ps/images/up/down, volume resolution, exec
 ├── runmanifest.py       # RunManifest model, (de)serialization, lookup (latest / by id)
@@ -130,8 +131,10 @@ src/drkit/
 ## 4. Manifest (`dr.yaml`)
 
 Default path: `/etc/drkit/dr.yaml` (override: `--config` or `DRKIT_CONFIG`).
-`${VAR}` placeholders are interpolated from the environment and from `repository.env_file`.
-`drkit` **refuses to run** if the manifest, password file or env file is group/world readable (`doctor` explains how to fix).
+`${VAR}` placeholders are interpolated from the environment and from `repository.env_file`; the process environment wins on conflicts. Only the braced form is interpolated (`$VAR` is left alone, e.g. for shell hooks) and `$$` escapes a literal `$`, as in Docker Compose. `repository.env_file` itself may only use process environment variables.
+The env file holds `KEY=VALUE` lines (`#` comments, optional `export` and surrounding quotes, no inline comments).
+The manifest is parsed with YAML 1.2 booleans (`true`/`false` only), so keys such as `on` are never read as booleans; duplicate keys are errors.
+`drkit` **refuses to run** if the manifest, password file or env file is not a regular file owned by the current user with no group/other permissions (`doctor` explains how to fix).
 
 ```yaml
 version: 1
@@ -208,6 +211,9 @@ Validation rules (must have unit tests):
 - `databases[].service` must exist in the resolved compose config (checked by `doctor`, not by parsing).
 - Unknown keys are errors (`extra="forbid"`).
 - Missing `${VAR}` is an error naming the variable, never printing other values.
+- Errors name the file and the key path (`projects[0].databases[1].engine: ...`), report every problem at once and never echo input values.
+- `retention` needs at least one of `daily`/`weekly`/`monthly`; `tls.strategy: reissue` needs `email`; `notifications` needs at least one channel.
+- Database names (`databases[].database`) and volume names are unique within a project.
 
 ---
 
@@ -346,8 +352,8 @@ Drill fails (non-zero) on any mismatch.
 - **Encryption:** restic encrypts all data client-side (AES-256 + Poly1305). TLS in transit to S3.
 - **Master secrets:** `restic.pass` + S3 credentials are the recovery keys. They **must also live outside the server** (password manager / sealed envelope). Losing them = losing the backups. README and runbook must say this prominently.
 - **Least privilege:** S3 key scoped to one bucket/prefix; recommend bucket **object lock / versioning** against ransomware deleting backups (documented, not enforced).
-- **File permissions:** manifest, password and env files must be `0600` root; `drkit` refuses otherwise.
-- **No secrets in output:** `runner.py` redacts env values and known secret patterns from logs, errors and reports. Unit-tested.
+- **File permissions:** manifest, password and env files must be regular files owned by the effective user running `drkit` (root in production) with no group/other permission bits (e.g. `0600`); `drkit` refuses otherwise. `doctor` applies the same check to deploy keys.
+- **No secrets in output:** `runner.py` redacts env values and known secret patterns (`*PASSWORD*=`, `*TOKEN*=`, credentials in URLs, Telegram bot tokens) from logs, errors and reports. Values passed to commands through `env=`, the env file and secret manifest fields are registered automatically; values shorter than 6 characters are not, to avoid mangling unrelated output. Typer tracebacks never render local variables. Unit-tested.
 - **Hooks** run as root from a root-owned `0600` manifest; documented as trusted input.
 - **Supply chain:** pinned dependencies (`uv.lock`), Dependabot, `pip-audit`, Gitleaks, Trivy on the Docker image, signed tags and releases.
 
@@ -355,7 +361,7 @@ Drill fails (non-zero) on any mismatch.
 
 ## 10. Observability
 
-- Logs: structlog JSON (`event`, `run_id`, `item`, `duration_s`, `status`) to stdout → journald.
+- Logs: structlog JSON (`event`, `run_id`, `item`, `duration_s`, `status`) to stderr → journald (human-readable on a TTY). stdout is reserved for command output, so `--json` stays machine-parseable. Every log value passes through the redactor.
 - `state.json`: last run/verify/drill status and timestamps.
 - `drkit report [--format md|json]`: last N runs, sizes, durations, current RPO, last verify, last drill RTO.
 - Exit codes: `0` ok · `1` partial failure · `2` config error · `3` lock held · `4` missing dependency · `5` restore aborted.
