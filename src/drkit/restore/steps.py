@@ -18,10 +18,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
 import structlog
 
 from drkit import lock, runner, state
+from drkit.config import Notifications
 from drkit.errors import ConfigError, DrkitError
+from drkit.notify import notify
 from drkit.runmanifest import new_run_id
 
 REPORTS_DIR = "reports"
@@ -99,6 +102,7 @@ class RestoreReport:
     report_path: Path | None = None
     errors: list[str] = field(default_factory=list)
     """Problems around the restore (saving the report) that leave its result unchanged."""
+    notify_errors: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -161,8 +165,11 @@ def run(
     on_step: Callable[[StepResult], None] | None = None,
     lock_path: Path | None = None,
     state_directory: Path | None = None,
+    notifications: Notifications | None = None,
+    host: str = "",
+    http_client: httpx.Client | None = None,
 ) -> RestoreReport:
-    """Execute ``plan`` under the run lock and save its report.
+    """Execute ``plan`` under the run lock, save its report and announce the outcome.
 
     The lock keeps scheduled backups (and prune) out while data is half restored: a backup
     taken then would record a state that never existed.
@@ -174,7 +181,30 @@ def run(
         save_report(report, state_directory)
     except ConfigError as exc:
         report.errors.append(f"report: {exc.message}")
+    if notifications is not None:
+        # A restore is rare and always news, good or bad: both outcomes are sent, whatever
+        # `notifications.on` says for scheduled jobs.
+        always = notifications.model_copy(update={"on": ["success", "failure"]})
+        report.notify_errors = notify(
+            always,
+            "success" if report.ok else "failure",
+            format_message(host, report),
+            client=http_client,
+        )
     return report
+
+
+def format_message(host: str, report: RestoreReport) -> str:
+    ran = [step for step in report.steps if step.status in ("ok", "failed")]
+    lines = [
+        f"drkit restore {report.kind} {report.target} on {host}: {'OK' if report.ok else 'FAILED'}",
+        f"run {report.run_id} · {len(ran)} step(s) in {report.duration_s:.0f}s"
+        f" · restore {report.restore_id}",
+    ]
+    failed = report.failed_step
+    if failed is not None:
+        lines.append(f"✗ step {failed.number} ({failed.title}): {failed.error}")
+    return "\n".join(lines)
 
 
 def save_report(report: RestoreReport, directory: Path | None = None) -> Path:

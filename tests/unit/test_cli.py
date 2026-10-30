@@ -510,9 +510,13 @@ class TestRestore:
             calls.append({"command": "project", "project": project, **kwargs})
             return self.make_plan("project", fail=self.fail)
 
-        def run(plan: RestorePlan, **kwargs: object) -> restore_steps.RestoreReport:
+        def run(plan: RestorePlan, **kwargs: Any) -> restore_steps.RestoreReport:
             calls.append({"command": "run", "from_step": kwargs["from_step"]})
-            report = restore_steps.execute(plan, **kwargs)  # type: ignore[arg-type]
+            assert kwargs["host"] == "prod-01"
+            assert "notifications" in kwargs
+            report = restore_steps.execute(
+                plan, from_step=kwargs["from_step"], on_step=kwargs["on_step"]
+            )
             report.report_path = tmp_path / "restore-r1.json"
             return report
 
@@ -588,7 +592,9 @@ class TestRestore:
     ) -> None:
         monkeypatch.setattr(cli, "_interactive", lambda: True)
         result = cli_runner.invoke(
-            cli.app, ["restore", "project", "shop", "--to-path", "/srv/new"], input="y\n"
+            cli.app,
+            ["restore", "project", "shop", "--to-path", "/srv/new"],
+            input="y\n",
         )
         out = ANSI.sub("", result.stdout)
         assert result.exit_code == 0, out
@@ -635,6 +641,7 @@ class TestRestore:
         def run_with_error(plan: RestorePlan, **kwargs: Any) -> restore_steps.RestoreReport:
             report = original(plan, **kwargs)
             report.errors.append("report: cannot write restore report in /var/lib/drkit")
+            report.notify_errors.append("webhook: HTTP 500")
             return report
 
         monkeypatch.setattr(restore_steps, "run", run_with_error)
@@ -647,3 +654,4 @@ class TestRestore:
 
         code, _, err = invoke("restore", "db", "shop", "--yes")
         assert "warning: report: cannot write restore report" in err
+        assert "warning: notification webhook: HTTP 500" in err

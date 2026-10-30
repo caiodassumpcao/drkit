@@ -2,9 +2,11 @@ import json
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 
 from drkit import lock, runner
+from drkit.config import Notifications
 from drkit.errors import ConfigError, DrkitError, LockHeldError
 from drkit.restore import steps
 from drkit.restore.steps import RestorePlan, Step, StepResult
@@ -151,3 +153,41 @@ def test_report_dict() -> None:
     assert data["status"] == "ok"
     assert data["report_path"] is None
     assert data["steps"][0]["detail"] == "done"
+
+
+class TestNotifications:
+    @pytest.fixture
+    def channel(self) -> tuple[Notifications, list[str], httpx.Client]:
+        received: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            received.append(json.loads(request.content)["text"])
+            return httpx.Response(200)
+
+        config = Notifications.model_validate(
+            {"on": ["failure"], "webhook": {"url": "https://hooks.example.com/x"}}
+        )
+        return config, received, httpx.Client(transport=httpx.MockTransport(handler))
+
+    def test_both_outcomes_are_announced(
+        self, tmp_path: Path, channel: tuple[Notifications, list[str], httpx.Client]
+    ) -> None:
+        config, received, client = channel
+        ok_plan, _ = plan("done")
+        failing, _ = plan(None, DrkitError("pg_restore failed"))
+        for restore_plan in (ok_plan, failing):
+            report = steps.run(
+                restore_plan,
+                lock_path=tmp_path / "lock",
+                state_directory=tmp_path,
+                notifications=config,
+                host="prod-01",
+                http_client=client,
+            )
+            assert report.notify_errors == []
+        assert received[0].splitlines()[0] == "drkit restore project shop on prod-01: OK"
+        assert received[1].splitlines() == [
+            "drkit restore project shop on prod-01: FAILED",
+            "run 20261029T030000Z-a1f3 · 2 step(s) in 0s · restore r1",
+            "✗ step 2 (step 2): pg_restore failed",
+        ]

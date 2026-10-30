@@ -23,6 +23,7 @@ from drkit.config import (
     CONFIG_ENV_VAR,
     DEFAULT_CONFIG_PATH,
     LoadedConfig,
+    Manifest,
     load_config,
     resolve_config_path,
 )
@@ -406,7 +407,7 @@ def restore_db_command(
         into=into,
         safety_backup=not no_safety_backup,
     )
-    _restore(options, plan, dry_run=dry_run, yes=yes, from_step=from_step)
+    _restore(options, loaded.manifest, plan, dry_run=dry_run, yes=yes, from_step=from_step)
 
 
 @restore_app.command("project")
@@ -429,11 +430,12 @@ def restore_project_command(
     restic = restic_for(loaded.manifest, dict(loaded.env))
     restic.ensure_ready()
     plan = project_restore.plan(loaded, project, restic, run_id=run_id, to_path=to_path)
-    _restore(options, plan, dry_run=dry_run, yes=yes, from_step=from_step)
+    _restore(options, loaded.manifest, plan, dry_run=dry_run, yes=yes, from_step=from_step)
 
 
 def _restore(
     options: Options,
+    manifest: Manifest,
     plan: restore_steps.RestorePlan,
     *,
     dry_run: bool,
@@ -458,7 +460,11 @@ def _restore(
             raise RestoreAbortedError("restore cancelled; nothing was changed")
 
     report = restore_steps.run(
-        plan, from_step=from_step, on_step=None if options.json else _render_step
+        plan,
+        from_step=from_step,
+        on_step=None if options.json else _render_step,
+        notifications=manifest.notifications,
+        host=manifest.host,
     )
     if options.json:
         _echo_json(report.to_dict())
@@ -469,7 +475,7 @@ def _restore(
             console.print(
                 f"Report: {escape(str(report.report_path))}", highlight=False, soft_wrap=True
             )
-        for error in report.errors:
+        for error in [*report.errors, *(f"notification {e}" for e in report.notify_errors)]:
             err_console.print(f"[yellow]warning:[/yellow] {escape(redact(error))}")
     failed = report.failed_step
     if failed is not None:
