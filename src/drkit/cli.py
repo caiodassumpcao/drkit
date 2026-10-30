@@ -419,17 +419,31 @@ def restore_project_command(
         Path | None,
         typer.Option("--to-path", help="Restore into this directory instead of projects[].path."),
     ] = None,
+    no_safety_backup: Annotated[
+        bool,
+        typer.Option(
+            "--no-safety-backup", help="Do not back up the current project first (not undoable)."
+        ),
+    ] = False,
     run_id: RunOption = "latest",
     dry_run: DryRunOption = False,
     yes: YesOption = False,
     from_step: FromStepOption = 1,
 ) -> None:
-    """Rebuild a project: code at the recorded commit, secrets, images, data and services."""
+    """Rebuild a project: code at the recorded commit, secrets, images, data and services,
+    after a safety backup of what exists of it now."""
     options: Options = ctx.obj
     loaded = _load(options)
     restic = restic_for(loaded.manifest, dict(loaded.env))
     restic.ensure_ready()
-    plan = project_restore.plan(loaded, project, restic, run_id=run_id, to_path=to_path)
+    plan = project_restore.plan(
+        loaded,
+        project,
+        restic,
+        run_id=run_id,
+        to_path=to_path,
+        safety_backup=not no_safety_backup,
+    )
     _restore(options, loaded.manifest, plan, dry_run=dry_run, yes=yes, from_step=from_step)
 
 

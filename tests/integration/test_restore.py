@@ -233,8 +233,9 @@ def test_restore_project_rebuilds_a_destroyed_project(
     assert result.exit_code == 0, result.output
     report = json.loads(result.stdout)
     assert [(s["number"], s["status"]) for s in report["steps"]] == [
-        (n, "ok") for n in range(1, 10)
+        (n, "ok") for n in range(1, 11)
     ]
+    assert report["steps"][0]["detail"] == "nothing to save: the project does not exist here"
     assert Path(report["report_path"]).is_file()
 
     # Identical data, the same code, the secrets back in place, and a healthy service.
@@ -246,3 +247,17 @@ def test_restore_project_rebuilds_a_destroyed_project(
     assert (demo.path / ".env").stat().st_mode & 0o777 == 0o600
     assert (demo.path / "restored-by-hook").exists()
     assert httpx.get(demo.health_url, timeout=10).text == "ok\n"
+
+    # Restoring over the running project first saves what exists of it, outside of any run.
+    again = drkit("--json", "restore", "project", "shop", "--yes")
+    assert again.exit_code == 0, again.output
+    second = json.loads(again.stdout)
+    saved = "4 item(s) saved" if with_volume else "3 item(s) saved"
+    assert second["steps"][0]["detail"].startswith(saved)
+    safety = drkit.restic().snapshots(["drkit", "kind:pre-restore"])
+    assert {s.tag_value("item") for s in safety} == (
+        {"db", "volume", "secrets", "project"} if with_volume else {"db", "secrets", "project"}
+    )
+    assert {s.tag_value("restore") for s in safety} == {second["restore_id"]}
+    assert all(s.tag_value("run") is None for s in safety)
+    assert demo.fixtures() == rows

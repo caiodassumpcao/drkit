@@ -18,7 +18,9 @@ from drkit.errors import DrkitError
 from drkit.orchestrator import run_hooks
 from drkit.restic import Node, Restic
 from drkit.restore.database import (
+    PRE_RESTORE_KIND,
     DatabaseTarget,
+    SafetyContext,
     check_database,
     connect,
     database_targets,
@@ -27,7 +29,12 @@ from drkit.restore.database import (
 from drkit.restore.steps import RestorePlan, Step
 from drkit.runmanifest import ProjectState, RunManifest, find_run, new_run_id
 from drkit.sources import volume as volume_source
-from drkit.sources.base import ItemResult
+from drkit.sources.base import ItemResult, Source
+from drkit.sources.mysql import MysqlSource
+from drkit.sources.postgres import PostgresSource
+from drkit.sources.project import ProjectSource
+from drkit.sources.secrets import SecretsSource
+from drkit.sources.volume import VolumeSource
 
 UP_TIMEOUT_S = 900.0
 # Seconds `docker compose up --wait` gives the database services to report healthy.
@@ -107,22 +114,51 @@ def plan(
     *,
     run_id: str = "latest",
     to_path: Path | None = None,
+    safety_backup: bool = True,
 ) -> RestorePlan:
-    """Plan the nine steps of ``drkit restore project`` (DESIGN §7.2)."""
+    """Plan the ten steps of ``drkit restore project`` (DESIGN §7.2)."""
     project = loaded.manifest.project(project_name)
-    destination = (to_path or project.path).absolute()
     run = find_run(
         restic,
         run_id,
-        accept=lambda run: (
-            project.name in run.projects and _item(run, "project", project.name) is not None
-        ),
+        accept=lambda run: holds_project(run, project.name),
         what=f"project {project.name!r}",
     )
+    return plan_for_run(loaded, project, restic, run, to_path=to_path, safety_backup=safety_backup)
+
+
+def holds_project(run: RunManifest, name: str) -> bool:
+    return name in run.projects and _item(run, "project", name) is not None
+
+
+def plan_for_run(
+    loaded: LoadedConfig,
+    project: Project,
+    restic: Restic,
+    run: RunManifest,
+    *,
+    to_path: Path | None = None,
+    safety_backup: bool = True,
+) -> RestorePlan:
+    """Plan the restore of ``project`` from ``run``."""
+    destination = (to_path or project.path).absolute()
     target = resolve(project, run, destination)
     restore_id = new_run_id()
+    host = loaded.manifest.host
     aside = destination.with_name(f"{destination.name}.pre-restore-{restore_id}")
     steps = [
+        Step(
+            "Safety backup of the current project",
+            (lambda: safety(restic, target, host=host, restore_id=restore_id))
+            if safety_backup
+            else (lambda: "not taken (--no-safety-backup)"),
+            (
+                f"kind:{PRE_RESTORE_KIND} snapshots of what exists of the project now "
+                "(databases, volumes, secrets, git state); skipped if nothing does",
+            )
+            if safety_backup
+            else ("skipped (--no-safety-backup)",),
+        ),
         Step(
             "Clone the repository at the recorded commit",
             lambda: clone(restic, target, aside),
@@ -179,6 +215,8 @@ def plan(
         f"Restore project {project.name} from run {run.run_id} into {destination}, "
         "replacing its databases and volumes"
     )
+    if not safety_backup:
+        summary += " without a safety backup"
     if _occupied(destination):
         summary += f"; the current {destination} is moved to {aside}"
     return RestorePlan(
@@ -187,7 +225,8 @@ def plan(
         run_id=run.run_id,
         steps=steps,
         summary=summary + ".",
-        warnings=_warnings(target),
+        warnings=_warnings(target)
+        + ([] if safety_backup else ["no safety backup: the current data cannot be recovered"]),
         restore_id=restore_id,
     )
 
@@ -195,8 +234,57 @@ def plan(
 # --------------------------------------------------------------------------- steps
 
 
+def safety(restic: Restic, target: ProjectRestore, *, host: str, restore_id: str) -> str:
+    """Step 1: back up whatever exists of the project before it is replaced.
+
+    Each item is saved only if it exists here: a running database service, a created
+    volume, the project directory. On a new host there is nothing to save.
+    """
+    sources, skipped = present_sources(target.project)
+    if not sources:
+        return "nothing to save: the project does not exist here"
+    ctx = SafetyContext(restic=restic, run_id=restore_id, host=host)
+    items = [source.backup(ctx) for source in sources]
+    failed = [item for item in items if item.status == "failed"]
+    if failed:
+        raise DrkitError(
+            f"safety backup of {failed[0].label} failed: {failed[0].error}",
+            hint="fix the cause, or restore without a safety backup (--no-safety-backup); "
+            "the current state is then lost",
+        )
+    detail = f"{len(items)} item(s) saved as restore:{restore_id}: " + ", ".join(
+        item.label for item in items
+    )
+    return detail + "".join(f"; {note}" for note in skipped)
+
+
+def present_sources(project: Project) -> tuple[list[Source], list[str]]:
+    """Backup sources for the parts of ``project`` that exist, and notes on the others."""
+    sources: list[Source] = []
+    skipped: list[str] = []
+    for database in project.databases:
+        try:
+            docker.compose_container(project.compose_project, database.service)
+        except DrkitError:
+            skipped.append(f"{project.name}/db/{database.database} skipped (service not running)")
+            continue
+        source_class = PostgresSource if database.engine == "postgres" else MysqlSource
+        sources.append(source_class(project, database))
+    for volume in project.volumes:
+        try:
+            docker.compose_volume(project.compose_project, volume.name)
+        except DrkitError:
+            continue  # nothing to save
+        sources.append(VolumeSource(project, volume))
+    if project.secrets and all((project.path / s).exists() for s in project.secrets):
+        sources.append(SecretsSource(project))
+    if (project.path / ".git").exists():
+        sources.append(ProjectSource(project))
+    return sources, skipped
+
+
 def clone(restic: Restic, target: ProjectRestore, aside: Path) -> str:
-    """Step 1: a fresh clone at the recorded commit, plus the patch of uncommitted changes."""
+    """Step 2: a fresh clone at the recorded commit, plus the patch of uncommitted changes."""
     destination, project = target.destination, target.project
     details = []
     if _occupied(destination):
@@ -206,7 +294,7 @@ def clone(restic: Restic, target: ProjectRestore, aside: Path) -> str:
         except OSError as exc:
             raise DrkitError(
                 f"cannot move {destination} aside to {aside}: {exc.strerror}",
-                hint="move or remove it by hand, then resume with --from-step 1",
+                hint="move or remove it by hand, then resume with --from-step 2",
             ) from None
         details.append(f"previous directory moved to {aside}")
     elif destination.is_dir():
@@ -227,7 +315,7 @@ def clone(restic: Restic, target: ProjectRestore, aside: Path) -> str:
 
 
 def restore_files(restic: Restic, target: ProjectRestore) -> str:
-    """Step 2: compose files and secrets, back in place with their original owners."""
+    """Step 3: compose files and secrets, back in place with their original owners."""
     project, destination = target.project, target.destination
     assert target.files.snapshot is not None  # noqa: S101 - ok items have one
     compose = _restore_files(restic, target.files.snapshot, project.path, destination)
@@ -255,7 +343,7 @@ def restore_files(restic: Restic, target: ProjectRestore) -> str:
 
 
 def pull_images(target: ProjectRestore) -> str:
-    """Step 3: recorded images by digest; the other services by the tag in the compose files."""
+    """Step 4: recorded images by digest; the other services by the tag in the compose files."""
     services = sorted(_services(target))
     pinned = {
         service: image
@@ -271,7 +359,7 @@ def pull_images(target: ProjectRestore) -> str:
 
 
 def start_databases(target: ProjectRestore) -> str:
-    """Step 4: only the database services, and wait until they accept connections."""
+    """Step 5: only the database services, and wait until they accept connections."""
     services = list(dict.fromkeys(t.service for t in target.databases))
     if not services:
         return "no database service"
@@ -288,7 +376,7 @@ def start_databases(target: ProjectRestore) -> str:
 
 
 def restore_databases(restic: Restic, target: ProjectRestore) -> str:
-    """Step 5: roles, then each dump, then sanity checks."""
+    """Step 6: roles, then each dump, then sanity checks."""
     details = []
     for database in target.databases:
         restore_database(restic, database, roles=True)
@@ -297,7 +385,7 @@ def restore_databases(restic: Restic, target: ProjectRestore) -> str:
 
 
 def restore_volumes(restic: Restic, target: ProjectRestore) -> str:
-    """Step 6: replace each volume's contents; the services using it stay stopped."""
+    """Step 7: replace each volume's contents; the services using it stay stopped."""
     if not target.volumes:
         return "no volume"
     # Creates the project's volumes (and containers, without starting them) where missing.
@@ -323,13 +411,13 @@ def restore_volumes(restic: Restic, target: ProjectRestore) -> str:
 
 
 def start_project(target: ProjectRestore) -> str:
-    """Step 7: every service, recreated so none keeps a mount of the replaced directory."""
+    """Step 8: every service, recreated so none keeps a mount of the replaced directory."""
     target.compose("up", "--detach", "--force-recreate", "--remove-orphans")
     return f"{len(_services(target))} service(s) started"
 
 
 def post_restore_hooks(target: ProjectRestore) -> str:
-    """Step 8: e.g. migrations, from the restored project directory."""
+    """Step 9: e.g. migrations, from the restored project directory."""
     hooks = target.project.hooks.post_restore
     if not hooks:
         return "none configured"
@@ -342,7 +430,7 @@ def post_restore_hooks(target: ProjectRestore) -> str:
 
 
 def healthchecks(target: ProjectRestore) -> str:
-    """Step 9: the restore is done when the project answers."""
+    """Step 10: the restore is done when the project answers."""
     if not target.project.healthchecks:
         return "none configured"
     results = health.wait_all(target.project.healthchecks)

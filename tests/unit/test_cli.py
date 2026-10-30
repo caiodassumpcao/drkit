@@ -593,12 +593,13 @@ class TestRestore:
         monkeypatch.setattr(cli, "_interactive", lambda: True)
         result = cli_runner.invoke(
             cli.app,
-            ["restore", "project", "shop", "--to-path", "/srv/new"],
+            ["restore", "project", "shop", "--to-path", "/srv/new", "--no-safety-backup"],
             input="y\n",
         )
         out = ANSI.sub("", result.stdout)
         assert result.exit_code == 0, out
         assert calls[0]["to_path"] == Path("/srv/new")
+        assert calls[0]["safety_backup"] is False
         assert "✓ 1. Locate the dumps (0.0s): dump found" in out
         assert "✓ 2. Restore the dumps (0.0s)\n" in out
         assert "Restore completed in" in out

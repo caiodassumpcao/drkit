@@ -57,6 +57,7 @@ class SafetyContext(BackupContext):
 
     def tags(self, kind: str, **labels: str | None) -> list[str]:
         tags = ["drkit", f"host:{self.host}", f"kind:{PRE_RESTORE_KIND}", f"restore:{self.run_id}"]
+        tags.append(f"item:{kind}")  # what the snapshot holds: db, volume, secrets, project
         return tags + [f"{key}:{value}" for key, value in labels.items() if value]
 
 

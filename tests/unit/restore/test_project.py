@@ -144,10 +144,16 @@ class FakeHost:
         monkeypatch.setattr(docker, "volume_containers", lambda name: ["app1"])
         monkeypatch.setattr(docker, "stop_containers", lambda c: self.events.append(f"stop {c}"))
         monkeypatch.setattr(volume_source, "resolve", lambda p, name, d: f"shop-prod_{name}")
+        # A new host: nothing of the project runs or exists yet (safety backup step).
+        monkeypatch.setattr(docker, "compose_container", self.not_running)
+        monkeypatch.setattr(docker, "compose_volume", self.not_running)
         monkeypatch.setattr(project_module, "connect", self.connect)
         monkeypatch.setattr(project_module, "restore_database", self.restore_database)
         monkeypatch.setattr(project_module, "check_database", lambda t: f"{t.label}: 3 table(s)")
         monkeypatch.setattr(health, "wait_all", lambda checks: self.health)
+
+    def not_running(self, project: str, name: str) -> str:
+        raise DrkitError(f"{name} not found")
 
     def clone(self, remote: str, destination: Path, deploy_key: Path | None) -> None:
         self.events.append(f"clone {remote}")
@@ -211,13 +217,14 @@ def plan(
     return project_module.plan(loaded, "shop", cast(Restic, restic), **kwargs)
 
 
-def test_plan_has_the_nine_steps(
+def test_plan_has_the_ten_steps(
     host: FakeHost, restic: FakeRestic, origin: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run = run_with(FILES, SECRETS, DB, UPLOADS)
     restore_plan = plan(restic, manifest(origin), run, monkeypatch)
 
     assert [step.title for step in restore_plan.steps] == [
+        "Safety backup of the current project",
         "Clone the repository at the recorded commit",
         "Restore compose files and secrets",
         "Pull the images",
@@ -228,21 +235,21 @@ def test_plan_has_the_nine_steps(
         "Run post_restore hooks",
         "Healthchecks",
     ]
-    assert restore_plan.steps[0].plan == (
+    assert restore_plan.steps[1].plan == (
         f"git clone {REMOTE} into {origin}",
         f"check out commit {SHA[:12]}",
         "apply uncommitted changes (snapshot patch1)",
     )
-    assert restore_plan.steps[1].plan == (
+    assert restore_plan.steps[2].plan == (
         "compose files (compose.yaml) from snapshot files1",
         "secrets from snapshot secrets1, mode 0600, original owner",
     )
-    assert restore_plan.steps[2].plan == (
+    assert restore_plan.steps[3].plan == (
         "app: ghcr.io/acme/shop:1@sha256:bbb",
         "db: postgres:16.9@sha256:aaa",
     )
-    assert restore_plan.steps[3].plan == ("docker compose up --detach --wait db",)
-    assert restore_plan.steps[8].plan == ("GET http://127.0.0.1:8080/health → 200 within 60s",)
+    assert restore_plan.steps[4].plan == ("docker compose up --detach --wait db",)
+    assert restore_plan.steps[9].plan == ("GET http://127.0.0.1:8080/health → 200 within 60s",)
     assert restore_plan.summary == (
         f"Restore project shop from run {RUN_ID} into {origin}, replacing its databases and "
         "volumes."
@@ -264,6 +271,7 @@ def test_full_restore(
 
     assert report.ok, report.steps
     assert [s.detail for s in report.steps] == [
+        "nothing to save: the project does not exist here",
         f"commit {SHA[:12]} checked out in {origin}; uncommitted changes applied",
         "1 compose file(s), 1 secret file(s) (mode 0600, original owner)",
         "2 service(s) pinned by digest, 1 pulled by tag",
@@ -307,11 +315,11 @@ def test_existing_directory_is_moved_aside(
     restore_plan = plan(restic, manifest(origin), run_with(FILES), monkeypatch)
     aside = origin.with_name(f"shop.pre-restore-{restore_plan.restore_id}")
     assert restore_plan.summary.endswith(f"; the current {origin} is moved to {aside}.")
-    assert restore_plan.steps[0].plan[0] == f"move the current {origin} to {aside}"
+    assert restore_plan.steps[1].plan[0] == f"move the current {origin} to {aside}"
 
-    report = steps.execute(restore_plan)
+    report = steps.execute(restore_plan, from_step=2)
 
-    assert report.steps[0].detail == (
+    assert report.steps[1].detail == (
         f"previous directory moved to {aside}; commit {SHA[:12]} checked out in {origin}; "
         "uncommitted changes applied"
     )
@@ -324,7 +332,7 @@ def test_empty_directory_is_reused(
     origin.mkdir(parents=True)
     restore_plan = plan(restic, manifest(origin), run_with(FILES), monkeypatch)
     assert "moved" not in restore_plan.summary
-    assert steps.execute(restore_plan, from_step=1).steps[0].status == "ok"
+    assert steps.execute(restore_plan, from_step=2).steps[1].status == "ok"
     assert not list(origin.parent.glob("*.pre-restore-*"))
 
 
@@ -339,9 +347,9 @@ def test_unmovable_directory(
 
     monkeypatch.setattr(Path, "rename", rename)
     report = steps.execute(plan(restic, manifest(origin), run_with(FILES), monkeypatch))
-    assert report.steps[0].error is not None
-    assert report.steps[0].error.startswith(f"cannot move {origin} aside to ")
-    assert "--from-step 1" in report.steps[0].error
+    assert report.steps[1].error is not None
+    assert report.steps[1].error.startswith(f"cannot move {origin} aside to ")
+    assert "--from-step 2" in report.steps[1].error
 
 
 def test_restore_into_another_directory(
@@ -370,10 +378,10 @@ def test_owners_are_restored_as_root(
     monkeypatch.setattr(os, "chown", lambda p, u, g: chowned.__setitem__(f"chown {p}", (u, g)))
 
     report = steps.execute(
-        plan(restic, manifest(origin), run_with(FILES, SECRETS), monkeypatch), from_step=1
+        plan(restic, manifest(origin), run_with(FILES, SECRETS), monkeypatch), from_step=2
     )
 
-    assert report.steps[1].status == "ok", report.steps
+    assert report.steps[2].status == "ok", report.steps
     # The checkout goes to the owner of the compose files; each secret keeps its own owner.
     assert chowned[str(origin)] == (1000, 33)
     assert chowned[str(origin / "compose.yaml")] == (1000, 33)
@@ -385,9 +393,9 @@ def test_external_volumes_are_refused_before_anything_starts(
 ) -> None:
     host.external = {"uploads"}
     report = steps.execute(plan(restic, manifest(origin), run_with(FILES, UPLOADS), monkeypatch))
-    assert [s.status for s in report.steps[:3]] == ["ok", "failed", "not_run"]
-    assert report.steps[1].error is not None
-    assert "volume 'uploads' of project 'shop' is declared external" in report.steps[1].error
+    assert [s.status for s in report.steps[:4]] == ["ok", "ok", "failed", "not_run"]
+    assert report.steps[2].error is not None
+    assert "volume 'uploads' of project 'shop' is declared external" in report.steps[2].error
 
 
 def test_unwritable_volume(
@@ -395,10 +403,10 @@ def test_unwritable_volume(
 ) -> None:
     host.mountpoint = host.mountpoint / "missing"
     report = steps.execute(
-        plan(restic, manifest(origin), run_with(FILES, UPLOADS), monkeypatch), from_step=6
+        plan(restic, manifest(origin), run_with(FILES, UPLOADS), monkeypatch), from_step=7
     )
-    assert report.steps[5].error is not None
-    assert report.steps[5].error.startswith("cannot write volume shop-prod_uploads at ")
+    assert report.steps[6].error is not None
+    assert report.steps[6].error.startswith("cannot write volume shop-prod_uploads at ")
 
 
 def test_failed_hook_and_healthcheck(
@@ -406,12 +414,12 @@ def test_failed_hook_and_healthcheck(
 ) -> None:
     origin.mkdir(parents=True)
     loaded = manifest(origin, hooks={"post_restore": ["exit 3"]})
-    report = steps.execute(plan(restic, loaded, run_with(FILES), monkeypatch), from_step=8)
-    assert report.steps[7].error == "post_restore hook failed with exit code 3: exit 3"
+    report = steps.execute(plan(restic, loaded, run_with(FILES), monkeypatch), from_step=9)
+    assert report.steps[8].error == "post_restore hook failed with exit code 3: exit 3"
 
     host.health = [HealthResult("http://127.0.0.1:8080/health", False, 5, 60.0, 502, "HTTP 502")]
-    report = steps.execute(plan(restic, loaded, run_with(FILES), monkeypatch), from_step=9)
-    assert report.steps[8].error == (
+    report = steps.execute(plan(restic, loaded, run_with(FILES), monkeypatch), from_step=10)
+    assert report.steps[9].error == (
         "http://127.0.0.1:8080/health: HTTP 502 (hint: check the service logs "
         "(`docker compose logs`))"
     )
@@ -423,10 +431,10 @@ def test_nothing_to_do_steps(
     loaded = manifest(origin, databases=[], volumes=[], hooks={}, healthchecks=[], secrets=[])
     state = STATE.model_copy(update={"dirty": False, "patch_snapshot": None, "images": {}})
     restore_plan = plan(restic, loaded, run_with(FILES, state=state), monkeypatch)
-    assert restore_plan.steps[2].plan == ("images by the tags in the compose files",)
+    assert restore_plan.steps[3].plan == ("images by the tags in the compose files",)
     report = steps.execute(restore_plan)
     assert report.ok, report.steps
-    assert [s.detail for s in report.steps][2:] == [
+    assert [s.detail for s in report.steps][3:] == [
         "0 service(s) pinned by digest, 3 pulled by tag",
         "no database service",
         "no database",
@@ -478,8 +486,102 @@ class TestPlanChecks:
     ) -> None:
         moved = tmp_path / "srv" / "shop-v2"
         report = steps.execute(plan(restic, manifest(moved), run_with(FILES), monkeypatch))
-        assert report.steps[1].error is not None
-        assert report.steps[1].error.startswith(
+        assert report.steps[2].error is not None
+        assert report.steps[2].error.startswith(
             f"snapshot files1 holds {restic.origin / 'compose.yaml'}, outside the project "
             f"directory {moved}"
         )
+
+
+class TestSafetyBackup:
+    """Step 1: what exists of the project is saved before it is replaced."""
+
+    @dataclass
+    class FakeSource:
+        kind: str
+        name: str
+        status: str = "ok"
+        contexts: list[Any] = field(default_factory=list)
+
+        @property
+        def label(self) -> str:
+            return f"shop/{self.kind}/{self.name}"
+
+        def backup(self, ctx: Any) -> ItemResult:
+            self.contexts.append(ctx)
+            return ItemResult(
+                kind=self.kind,
+                project="shop",
+                name=self.name,
+                status=self.status,  # type: ignore[arg-type]
+                error="dump failed" if self.status == "failed" else None,
+            )
+
+    def test_existing_parts_are_saved_outside_of_any_run(
+        self, host: FakeHost, restic: FakeRestic, origin: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = self.FakeSource("db", "shop")
+        volume = self.FakeSource("volume", "uploads")
+        monkeypatch.setattr(
+            project_module, "present_sources", lambda project: ([db, volume], ["note"])
+        )
+        restore_plan = plan(restic, manifest(origin), run_with(FILES), monkeypatch)
+        report = steps.execute(restore_plan)
+        assert report.steps[0].detail == (
+            f"2 item(s) saved as restore:{restore_plan.restore_id}: shop/db/shop, "
+            "shop/volume/uploads; note"
+        )
+        [ctx] = db.contexts
+        assert ctx.tags("db", project="shop", db="shop")[2:5] == [
+            "kind:pre-restore",
+            f"restore:{restore_plan.restore_id}",
+            "item:db",
+        ]
+
+    def test_a_failed_item_stops_the_restore(
+        self, host: FakeHost, restic: FakeRestic, origin: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        broken = self.FakeSource("db", "shop", status="failed")
+        monkeypatch.setattr(project_module, "present_sources", lambda project: ([broken], []))
+        report = steps.execute(plan(restic, manifest(origin), run_with(FILES), monkeypatch))
+        assert report.steps[0].error is not None
+        assert report.steps[0].error.startswith("safety backup of shop/db/shop failed: dump failed")
+        assert "--no-safety-backup" in report.steps[0].error
+        assert report.steps[1].status == "not_run"
+
+    def test_can_be_skipped(
+        self, host: FakeHost, restic: FakeRestic, origin: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        restore_plan = plan(
+            restic, manifest(origin), run_with(FILES), monkeypatch, safety_backup=False
+        )
+        assert restore_plan.steps[0].plan == ("skipped (--no-safety-backup)",)
+        assert "without a safety backup" in restore_plan.summary
+        assert restore_plan.warnings[-1] == (
+            "no safety backup: the current data cannot be recovered"
+        )
+        assert steps.execute(restore_plan, from_step=1).steps[0].detail == (
+            "not taken (--no-safety-backup)"
+        )
+
+    def test_present_sources(
+        self, host: FakeHost, origin: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = manifest(origin).manifest.projects[0]
+        assert project_module.present_sources(project) == (
+            [],
+            ["shop/db/shop skipped (service not running)"],
+        )
+
+        monkeypatch.setattr(docker, "compose_container", lambda project, service: "ctr")
+        monkeypatch.setattr(docker, "compose_volume", lambda project, name: f"{project}_{name}")
+        (origin / ".git").mkdir(parents=True)
+        (origin / ".env").write_text("x")
+        sources, skipped = project_module.present_sources(project)
+        assert [type(s).__name__ for s in sources] == [
+            "PostgresSource",
+            "VolumeSource",
+            "SecretsSource",
+            "ProjectSource",
+        ]
+        assert skipped == []

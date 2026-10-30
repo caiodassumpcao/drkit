@@ -219,6 +219,7 @@ def test_postgres_restore(server: FakeServer, restic: Restic, run: list[RunManif
         "host:prod-01",
         "kind:pre-restore",
         f"restore:{plan.restore_id}",
+        "item:db",
         "project:shop",
         "db:shop",
     ]
@@ -383,6 +384,7 @@ def test_safety_dumps_belong_to_no_run(restic: Restic) -> None:
         "host:prod-01",
         "kind:pre-restore",
         "restore:restore1",
+        "item:db",
         "project:shop",
         "db:orders",
     ]
