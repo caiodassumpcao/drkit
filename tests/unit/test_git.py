@@ -105,3 +105,21 @@ def test_checkout_of_a_lost_commit(remote: tuple[Path, str], tmp_path: Path) -> 
         git.checkout(destination, "0123456789ab" * 3 + "0123")
     assert exc_info.value.hint is not None
     assert "--run" in exc_info.value.hint
+
+
+def test_checkout_ref(remote: tuple[Path, str], tmp_path: Path) -> None:
+    bare, first = remote
+    run_git("-C", str(bare), "update-ref", "refs/tags/v1", first)
+    run_git("-C", str(bare), "branch", "release", first)
+    destination = tmp_path / "playbook"
+    git.clone(str(bare), destination, None)
+
+    git.checkout_ref(destination, "v1")
+    assert (destination / "app.py").read_text() == "v1\n"
+    git.checkout_ref(destination, "main")
+    assert (destination / "app.py").read_text() == "v2\n"
+    git.checkout_ref(destination, "release")  # only on origin
+    assert (destination / "app.py").read_text() == "v1\n"
+    with pytest.raises(CommandError, match="cannot check out 'v9'") as exc_info:
+        git.checkout_ref(destination, "v9")
+    assert exc_info.value.hint == "use a tag, branch or commit that exists in the repository"

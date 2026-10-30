@@ -86,6 +86,24 @@ def checkout(path: Path, sha: str) -> None:
         )
 
 
+def checkout_ref(path: Path, ref: str) -> None:
+    """Check out a tag, branch or commit; a branch is also looked up on ``origin``."""
+    result = None
+    for candidate in (ref, f"origin/{ref}"):
+        result = runner.run(
+            args(path, "checkout", "--quiet", "--detach", candidate),
+            timeout=GIT_TIMEOUT_S,
+            check=False,
+        )
+        if result.ok:
+            return
+    assert result is not None  # noqa: S101 - the loop ran
+    raise CommandError(
+        f"cannot check out {ref!r} in {path}: {runner.failure_detail(result, max_lines=2)}",
+        hint="use a tag, branch or commit that exists in the repository",
+    )
+
+
 def _remote_hint(deploy_key: Path | None) -> str:
     if deploy_key is None:
         return "check git.remote and network access; private repositories need git.deploy_key"
