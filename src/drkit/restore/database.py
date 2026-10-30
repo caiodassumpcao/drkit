@@ -8,6 +8,7 @@ a ``kind:pre-restore`` snapshot, so a restore that picked the wrong run can be u
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -89,6 +90,33 @@ class Engine(ABC):
 
     @abstractmethod
     def count_tables(self) -> int: ...
+
+    @abstractmethod
+    def server_version(self) -> str: ...
+
+    def check_version(self) -> str:
+        """Fail early when the target server is older than the one the dump came from.
+
+        Dumps restore into the same version line or a newer one; an older server fails
+        halfway, after the safety dump and possibly after dropping tables.
+        """
+        dumped = self.target.item.engine_version or ""
+        running = self.server_version()
+        if _family(dumped) != _family(running):
+            raise DrkitError(
+                f"{self.target.label} was dumped from {dumped} but service "
+                f"{self.target.service!r} runs {running}: a different server family",
+                hint="restore into a service running the same server (MySQL or MariaDB)",
+            )
+        parts = 1 if self.target.database.engine == "postgres" else 2
+        dumped_line, running_line = _line(dumped, parts), _line(running, parts)
+        if dumped_line and running_line and running_line < dumped_line:
+            raise DrkitError(
+                f"{self.target.label} was dumped from {dumped}, newer than the {running} of "
+                f"service {self.target.service!r}",
+                hint="restore into a service of the same version line or newer",
+            )
+        return running
 
     @abstractmethod
     def query(self, statement: str) -> str: ...
@@ -176,6 +204,10 @@ class PostgresEngine(Engine):
     def query(self, statement: str) -> str:
         return self._psql(self.name, statement)
 
+    def server_version(self) -> str:
+        # e.g. "16.9 (Debian 16.9-1.pgdg120+1)"
+        return self._psql("postgres", "SHOW server_version").split(" ", 1)[0]
+
     def _psql(self, database: str, statement: str) -> str:
         return self.exec(
             ["psql", "-U", self.user, "-d", database, "-v", "ON_ERROR_STOP=1", "-XtAc", statement]
@@ -220,6 +252,19 @@ class MysqlEngine(Engine):
             label=self.client,
             consumer_env=self.env,
         )
+
+    def server_version(self) -> str:
+        return self.exec(
+            [
+                self.client,
+                "-u",
+                self.user,
+                "--batch",
+                "--skip-column-names",
+                "-e",
+                "SELECT VERSION()",
+            ]
+        ).strip()
 
     def count_tables(self) -> int:
         statement = "SELECT count(*) FROM information_schema.tables WHERE table_schema = '{}'"
@@ -351,12 +396,14 @@ def plan(
     restore_id = new_run_id()
 
     def locate() -> str:
+        details = []
         for target in targets:
             for snapshot in (target.item.snapshot, target.item.globals_snapshot):
                 if snapshot:
                     restic.snapshot(snapshot)
-            docker.compose_container(project.compose_project, target.service)
-        return "; ".join(f"{t.label}: dump found, service {t.service} running" for t in targets)
+            version = connect(target).check_version()
+            details.append(f"{target.label}: dump found, service {target.service} runs {version}")
+        return "; ".join(details)
 
     def safety() -> str:
         if not safety_backup:
@@ -414,6 +461,19 @@ def plan(
         warnings=warnings,
         restore_id=restore_id,
     )
+
+
+def _family(version: str) -> str:
+    return "mariadb" if "mariadb" in version.lower() else "other"
+
+
+def _line(version: str, parts: int) -> tuple[int, ...]:
+    """``16.9`` → ``(16,)``; ``8.4.9`` → ``(8, 4)``; ``()`` when unparsable (not compared)."""
+    match = re.match(r"^(\d+)(?:\.(\d+))?", version)
+    if match is None:
+        return ()
+    numbers = [int(n) for n in match.groups() if n is not None]
+    return tuple(numbers[:parts])
 
 
 def _db_items(run: RunManifest, project: str, database: str | None) -> list[ItemResult]:

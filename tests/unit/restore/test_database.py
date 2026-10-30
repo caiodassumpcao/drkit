@@ -203,7 +203,7 @@ def test_postgres_restore(server: FakeServer, restic: Restic, run: list[RunManif
 
     assert report.ok, report.steps
     assert [s.detail for s in report.steps] == [
-        "shop/db/shop: dump found, service db running",
+        "shop/db/shop: dump found, service db runs 16.9",
         "shop/db/shop: snapshot safety1",
         "shop/db/shop into service db",
         "shop/db/shop: 3 table(s)",
@@ -386,3 +386,39 @@ def test_safety_dumps_belong_to_no_run(restic: Restic) -> None:
         "project:shop",
         "db:orders",
     ]
+
+
+class TestServerVersion:
+    @pytest.mark.parametrize(
+        ("item", "version", "outcome"),
+        [
+            (POSTGRES, "16.14 (Debian)", "16.14"),
+            (POSTGRES, "17.2", "17.2"),
+            (POSTGRES, "15.8", "newer than the 15.8 of service 'db'"),
+            (MYSQL, "8.4.11", "8.4.11"),
+            (MYSQL, "8.0.40", "newer than the 8.0.40 of service 'mysql'"),
+            (MYSQL, "11.4.13-MariaDB-ubu2404", "a different server family"),
+            (MYSQL, "unknown", "unknown"),
+        ],
+    )
+    def test_target_must_not_be_older(
+        self,
+        server: FakeServer,
+        restic: Restic,
+        run: list[RunManifest],
+        item: ItemResult,
+        version: str,
+        outcome: str,
+    ) -> None:
+        key = "psql" if item.engine == "postgres" else "mysql"
+        server.outputs[key] = [(0, version + "\n")]
+        plan = database_module.plan(loaded(), "shop", restic, database=item.name)
+        report = steps.execute(plan)
+        step = report.steps[0]
+        if step.status == "ok":
+            assert step.detail is not None
+            assert step.detail.endswith(f"runs {outcome}")
+        else:
+            assert step.error is not None
+            assert outcome in step.error
+            assert report.steps[1].status == "not_run", "nothing changes on a version mismatch"
