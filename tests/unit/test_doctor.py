@@ -89,6 +89,18 @@ class TestRunChecks:
         assert by_name(checks)["ansible-playbook"].status is Status.FAIL
         assert doctor.exit_code(checks) is ExitCode.MISSING_DEPENDENCY
 
+    def test_certbot_is_required_to_reissue_certificates(
+        self, manifest: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manifest.write_text(
+            manifest.read_text() + "system: {tls: {strategy: reissue, email: ops@example.com}}\n"
+        )
+        monkeypatch.setattr(runner, "run", fake_run({**HEALTHY, "certbot": "certbot 2.9.0\n"}))
+        checks = by_name(doctor.run_checks(manifest, environ={}))
+        assert (checks["certbot"].status, checks["certbot"].detail) == (Status.OK, "2.9.0")
+        monkeypatch.setattr(runner, "run", fake_run(HEALTHY))
+        assert by_name(doctor.run_checks(manifest, environ={}))["certbot"].status is Status.FAIL
+
     def test_invalid_manifest_still_checks_everything_else(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

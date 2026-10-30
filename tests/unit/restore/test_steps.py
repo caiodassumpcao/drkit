@@ -191,3 +191,35 @@ class TestNotifications:
             "run 20261029T030000Z-a1f3 · 2 step(s) in 0s · restore r1",
             "✗ step 2 (step 2): pg_restore failed",
         ]
+
+
+def test_nested_pipelines_are_reported() -> None:
+    inner = [StepResult(1, "Clone", "ok", 1.0, "cloned")]
+
+    def nested() -> steps.Outcome:
+        return steps.Outcome("shop (1.0s)", [StepResult(1, "Project shop", "ok", substeps=inner)])
+
+    def broken() -> str:
+        raise steps.NestedStepError(
+            "project blog stopped",
+            substeps=[StepResult(1, "Project blog", "failed", error="boom")],
+        )
+
+    restore_plan = RestorePlan(
+        "host", "prod-01", "r", [Step("Projects", nested), Step("More", broken)], restore_id="r1"
+    )
+    restore_plan.notes.append("DNS: point shop.example.com here")
+    restore_plan.facts["rto_s"] = 12.5
+
+    report = steps.execute(restore_plan)
+
+    assert report.steps[0].detail == "shop (1.0s)"
+    assert report.steps[0].substeps[0].substeps == inner
+    assert report.steps[1].substeps[0].error == "boom"
+    assert report.notes == ["DNS: point shop.example.com here"]
+    data = report.to_dict()
+    assert data["facts"] == {"rto_s": 12.5}
+    assert data["steps"][0]["substeps"][0]["substeps"][0]["title"] == "Clone"
+    assert "RTO 12s (restore start → all healthchecks green)" in steps.format_message(
+        "prod-01", report
+    )

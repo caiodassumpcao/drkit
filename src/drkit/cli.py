@@ -32,6 +32,7 @@ from drkit.orchestrator import SUPPORTED_KINDS, restic_for, run_backup, run_prun
 from drkit.report import DEFAULT_LIMIT as DEFAULT_REPORT_LIMIT
 from drkit.report import build_report, human_bytes, to_markdown
 from drkit.restore import database as database_restore
+from drkit.restore import host as host_restore
 from drkit.restore import project as project_restore
 from drkit.restore import steps as restore_steps
 from drkit.runmanifest import RunManifest, list_runs, load_run
@@ -447,6 +448,37 @@ def restore_project_command(
     _restore(options, loaded.manifest, plan, dry_run=dry_run, yes=yes, from_step=from_step)
 
 
+class RestoreTarget(StrEnum):
+    local = "local"
+
+
+@restore_app.command("host")
+@handle_errors
+def restore_host_command(
+    ctx: typer.Context,
+    target: Annotated[
+        RestoreTarget, typer.Option("--target", help="Where to restore (this machine).")
+    ] = RestoreTarget.local,
+    skip_system: Annotated[
+        bool,
+        typer.Option(
+            "--skip-system", help="Do not run the Ansible playbook (host already provisioned)."
+        ),
+    ] = False,
+    run_id: RunOption = "latest",
+    dry_run: DryRunOption = False,
+    yes: YesOption = False,
+    from_step: FromStepOption = 1,
+) -> None:
+    """Rebuild this server: Ansible, system paths, every project, TLS, nginx, healthchecks."""
+    options: Options = ctx.obj
+    loaded = _load(options)
+    restic = restic_for(loaded.manifest, dict(loaded.env))
+    restic.ensure_ready()
+    plan = host_restore.plan(loaded, restic, run_id=run_id, skip_system=skip_system)
+    _restore(options, loaded.manifest, plan, dry_run=dry_run, yes=yes, from_step=from_step)
+
+
 def _restore(
     options: Options,
     manifest: Manifest,
@@ -466,12 +498,7 @@ def _restore(
     if not options.json:
         _render_plan(plan, from_step)
     if not yes:
-        if not _interactive():
-            raise RestoreAbortedError(
-                "restore needs a confirmation", hint="run it from a terminal, or pass --yes"
-            )
-        if not typer.confirm("Continue?", default=False):
-            raise RestoreAbortedError("restore cancelled; nothing was changed")
+        _confirm()
 
     report = restore_steps.run(
         plan,
@@ -483,20 +510,37 @@ def _restore(
     if options.json:
         _echo_json(report.to_dict())
     else:
-        status = "[green]completed[/green]" if report.ok else "[red]failed[/red]"
-        console.print(f"\nRestore {status} in {report.duration_s:.1f}s.")
-        if report.report_path:
-            console.print(
-                f"Report: {escape(str(report.report_path))}", highlight=False, soft_wrap=True
-            )
-        for error in [*report.errors, *(f"notification {e}" for e in report.notify_errors)]:
-            err_console.print(f"[yellow]warning:[/yellow] {escape(redact(error))}")
+        _render_report(report)
     failed = report.failed_step
     if failed is not None:
         raise RestoreAbortedError(
             f"restore stopped at step {failed.number} ({failed.title}): {failed.error}",
             hint=f"fix the cause, then resume with --from-step {failed.number} --run {plan.run_id}",
         )
+
+
+def _confirm() -> None:
+    if not _interactive():
+        raise RestoreAbortedError(
+            "restore needs a confirmation", hint="run it from a terminal, or pass --yes"
+        )
+    if not typer.confirm("Continue?", default=False):
+        raise RestoreAbortedError("restore cancelled; nothing was changed")
+
+
+def _render_report(report: restore_steps.RestoreReport) -> None:
+    status = "[green]completed[/green]" if report.ok else "[red]failed[/red]"
+    console.print(f"\nRestore {status} in {report.duration_s:.1f}s.")
+    if "rto_s" in report.facts:
+        console.print(f"RTO: {report.facts['rto_s']:.1f}s (restore start → all healthchecks green)")
+    if report.notes:
+        console.print("\n[bold]Next steps[/bold]")
+        for note in report.notes:
+            console.print(f"  • {escape(redact(note))}", highlight=False)
+    if report.report_path:
+        console.print(f"Report: {escape(str(report.report_path))}", highlight=False, soft_wrap=True)
+    for error in [*report.errors, *(f"notification {e}" for e in report.notify_errors)]:
+        err_console.print(f"[yellow]warning:[/yellow] {escape(redact(error))}")
 
 
 def _interactive() -> bool:
@@ -519,18 +563,20 @@ def _render_plan(plan: restore_steps.RestorePlan, from_step: int) -> None:
         console.print(f"[yellow]warning:[/yellow] {escape(redact(warning))}", highlight=False)
 
 
-def _render_step(result: restore_steps.StepResult) -> None:
+def _render_step(result: restore_steps.StepResult, indent: str = "") -> None:
     if result.status == "skipped":
         return
     if result.status == "not_run":
-        console.print(f"  [dim]- {result.number}. {escape(result.title)}: not run[/dim]")
+        console.print(f"{indent}  [dim]- {result.number}. {escape(result.title)}: not run[/dim]")
         return
     mark = _STATUS_STYLE[doctor.Status.OK if result.status == "ok" else doctor.Status.FAIL]
-    line = f"{mark} {result.number}. {escape(result.title)} ({result.duration_s:.1f}s)"
+    line = f"{indent}{mark} {result.number}. {escape(result.title)} ({result.duration_s:.1f}s)"
     outcome = result.detail if result.status == "ok" else result.error
-    if outcome:
+    if outcome and not (result.substeps and result.status == "failed"):
         line += f": {escape(redact(outcome))}"
     console.print(line, highlight=False)
+    for substep in result.substeps:
+        _render_step(substep, indent + "    ")
 
 
 runs_app = typer.Typer(help="Inspect backup runs.", no_args_is_help=True)

@@ -30,15 +30,31 @@ from drkit.runmanifest import new_run_id
 REPORTS_DIR = "reports"
 
 StepStatus = Literal["ok", "failed", "skipped", "not_run"]
-RestoreKind = Literal["db", "project"]
+RestoreKind = Literal["db", "project", "host"]
 
 log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
+class Outcome:
+    """What a step returns when it ran a pipeline of its own (e.g. one restore per project)."""
+
+    detail: str | None
+    substeps: list[StepResult]
+
+
+class NestedStepError(DrkitError):
+    """A step failed inside a nested pipeline; ``substeps`` show where."""
+
+    def __init__(self, message: str, *, substeps: list[StepResult], hint: str | None = None):
+        super().__init__(message, hint=hint)
+        self.substeps = substeps
+
+
+@dataclass(frozen=True, slots=True)
 class Step:
     title: str
-    action: Callable[[], str | None]
+    action: Callable[[], str | Outcome | None]
     """Does the work; returns a short detail for the report."""
     plan: tuple[str, ...] = ()
     """What the step will do, as printed by ``--dry-run``."""
@@ -57,6 +73,10 @@ class RestorePlan:
     """Things the operator should know before confirming (e.g. uncommitted changes)."""
     restore_id: str = field(default_factory=new_run_id)
     """Names the report and tags the safety dumps taken by this restore."""
+    notes: list[str] = field(default_factory=list)
+    """Filled by the steps: what the operator still has to do (e.g. a DNS checklist)."""
+    facts: dict[str, Any] = field(default_factory=dict)
+    """Filled by the steps: measurements for the report (e.g. RTO, inventory diff)."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +108,7 @@ class StepResult:
     duration_s: float = 0.0
     detail: str | None = None
     error: str | None = None
+    substeps: list[StepResult] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -103,6 +124,8 @@ class RestoreReport:
     errors: list[str] = field(default_factory=list)
     """Problems around the restore (saving the report) that leave its result unchanged."""
     notify_errors: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    facts: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -154,6 +177,8 @@ def execute(
             if on_step is not None:
                 on_step(result)
         report.finished_at = datetime.now(UTC)
+        report.notes = list(plan.notes)
+        report.facts = dict(plan.facts)
         log.info("restore.finish", ok=report.ok, duration_s=report.duration_s)
     return report
 
@@ -201,6 +226,8 @@ def format_message(host: str, report: RestoreReport) -> str:
         f"run {report.run_id} · {len(ran)} step(s) in {report.duration_s:.0f}s"
         f" · restore {report.restore_id}",
     ]
+    if "rto_s" in report.facts:
+        lines.append(f"RTO {report.facts['rto_s']:.0f}s (restore start → all healthchecks green)")
     failed = report.failed_step
     if failed is not None:
         lines.append(f"✗ step {failed.number} ({failed.title}): {failed.error}")
@@ -236,12 +263,19 @@ def _run_step(number: int, step: Step) -> StepResult:
     started = time.monotonic()
     detail: str | None = None
     error: str | None = None
+    substeps: list[StepResult] = []
     status: StepStatus = "failed"
     try:
-        detail = step.action()
+        outcome = step.action()
+        if isinstance(outcome, Outcome):
+            detail, substeps = outcome.detail, outcome.substeps
+        else:
+            detail = outcome
         status = "ok"
     except DrkitError as exc:
         error = runner.redact(exc.message + (f" (hint: {exc.hint})" if exc.hint else ""))
+        if isinstance(exc, NestedStepError):
+            substeps = exc.substeps
     except Exception as exc:
         # A bug must still end in a saved report that says where the restore stopped.
         log.exception("restore.step_crashed", step=number)
@@ -253,6 +287,7 @@ def _run_step(number: int, step: Step) -> StepResult:
         duration_s=round(time.monotonic() - started, 1),
         detail=runner.redact(detail) if detail else None,
         error=error,
+        substeps=substeps,
     )
     log.info(
         "restore.step_finished",

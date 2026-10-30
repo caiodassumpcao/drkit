@@ -139,11 +139,17 @@ def plan_for_run(
     *,
     to_path: Path | None = None,
     safety_backup: bool = True,
+    healthchecks_deferred: bool = False,
+    restore_id: str | None = None,
 ) -> RestorePlan:
-    """Plan the restore of ``project`` from ``run``."""
+    """Plan the restore of ``project`` from ``run``.
+
+    ``restore host`` shares its restore ID with every project and runs the healthchecks
+    itself, once nginx is back (``healthchecks_deferred``).
+    """
     destination = (to_path or project.path).absolute()
     target = resolve(project, run, destination)
-    restore_id = new_run_id()
+    restore_id = restore_id or new_run_id()
     host = loaded.manifest.host
     aside = destination.with_name(f"{destination.name}.pre-restore-{restore_id}")
     steps = [
@@ -203,8 +209,12 @@ def plan_for_run(
         ),
         Step(
             "Healthchecks",
-            lambda: healthchecks(target),
-            tuple(
+            (lambda: "deferred to the host healthchecks")
+            if healthchecks_deferred
+            else (lambda: healthchecks(target)),
+            ("deferred to the host healthchecks",)
+            if healthchecks_deferred
+            else tuple(
                 f"GET {check.url} → {check.expect_status} within {check.timeout}s"
                 for check in project.healthchecks
             )

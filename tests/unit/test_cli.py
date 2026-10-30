@@ -18,6 +18,7 @@ from drkit.errors import ConfigError, DrkitError
 from drkit.orchestrator import BackupReport, PruneReport, RetentionResult
 from drkit.report import StatusReport
 from drkit.restore import database as database_restore
+from drkit.restore import host as host_restore
 from drkit.restore import project as project_restore
 from drkit.restore import steps as restore_steps
 from drkit.restore.steps import RestorePlan, Step
@@ -656,3 +657,59 @@ class TestRestore:
         code, _, err = invoke("restore", "db", "shop", "--yes")
         assert "warning: report: cannot write restore report" in err
         assert "warning: notification webhook: HTTP 500" in err
+
+
+class TestRestoreHost:
+    @pytest.fixture
+    def calls(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[str, Any]]:
+        calls: list[dict[str, Any]] = []
+
+        def plan(loaded: object, restic: object, **kwargs: Any) -> RestorePlan:
+            calls.append(kwargs)
+            projects = restore_steps.StepResult(
+                1,
+                "Project shop",
+                "ok",
+                2.0,
+                "10 steps",
+                substeps=[restore_steps.StepResult(1, "Clone", "ok", 1.0, "cloned")],
+            )
+            restore_plan = RestorePlan(
+                kind="host",
+                target="prod-01",
+                run_id=TestRestore.RUN_ID,
+                steps=[
+                    Step("Preflight", lambda: "Ubuntu 24.04"),
+                    Step("Restore the projects", lambda: restore_steps.Outcome("shop", [projects])),
+                ],
+                summary="Rebuild host prod-01.",
+                restore_id="r1",
+            )
+            restore_plan.notes.append("DNS: point shop.example.com to this server")
+            restore_plan.facts["rto_s"] = 42.0
+            return restore_plan
+
+        def run(plan: RestorePlan, **kwargs: Any) -> restore_steps.RestoreReport:
+            return restore_steps.execute(plan, on_step=kwargs["on_step"])
+
+        monkeypatch.setattr(host_restore, "plan", plan)
+        monkeypatch.setattr(restore_steps, "run", run)
+        return calls
+
+    @pytest.mark.usefixtures("loaded")
+    def test_renders_projects_checklist_and_rto(self, calls: list[dict[str, Any]]) -> None:
+        code, out, _ = invoke("restore", "host", "--yes", "--skip-system", "--target", "local")
+        assert code == 0, out
+        assert calls == [{"run_id": "latest", "skip_system": True}]
+        assert "✓ 2. Restore the projects" in out
+        assert "    ✓ 1. Project shop (2.0s): 10 steps" in out
+        assert "        ✓ 1. Clone (1.0s): cloned" in out
+        assert "RTO: 42.0s (restore start → all healthchecks green)" in out
+        assert "Next steps" in out
+        assert "• DNS: point shop.example.com to this server" in out
+
+    @pytest.mark.usefixtures("loaded")
+    def test_only_local_target(self, calls: list[dict[str, Any]]) -> None:
+        code, _, err = invoke("restore", "host", "--target", "remote", "--dry-run")
+        assert code == 2
+        assert "remote" in err

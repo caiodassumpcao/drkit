@@ -99,6 +99,13 @@ ANSIBLE = Dependency(
     minimum=(2, 15, 0),
     install_hint="install ansible-core >= 2.15 (e.g. pipx install ansible-core)",
 )
+CERTBOT = Dependency(
+    name="certbot",
+    version_command=("certbot", "--version"),
+    version_pattern=re.compile(r"certbot (\d+\.\d+\.\d+)"),
+    minimum=None,
+    install_hint="apt-get install certbot (scripts/bootstrap.sh installs it)",
+)
 REQUIRED_DEPENDENCIES = (RESTIC, DOCKER, DOCKER_COMPOSE, GIT)
 
 
@@ -134,10 +141,14 @@ def run_checks(config_path: Path, *, environ: Mapping[str, str] | None = None) -
         # Without a manifest we cannot know whether Ansible is needed: report it, never fail.
         optional: Sequence[Dependency] = (ANSIBLE,)
         required: Sequence[Dependency] = REQUIRED_DEPENDENCIES
-    elif loaded.manifest.system.ansible is not None:
-        optional, required = (), (*REQUIRED_DEPENDENCIES, ANSIBLE)
     else:
-        optional, required = (), REQUIRED_DEPENDENCIES
+        system = loaded.manifest.system
+        optional = ()
+        required = REQUIRED_DEPENDENCIES
+        if system.ansible is not None:
+            required = (*required, ANSIBLE)
+        if system.tls is not None and system.tls.strategy == "reissue":
+            required = (*required, CERTBOT)
     dependency_checks = [check_dependency(dep) for dep in required]
     dependency_checks += [check_dependency(dep, required=False) for dep in optional]
     checks.extend(dependency_checks)
