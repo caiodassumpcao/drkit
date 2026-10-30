@@ -94,11 +94,14 @@ addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
-    "-m", "not integration",
+    "-m", "not integration and not host",
     "--cov=drkit",
     "--cov-report=term-missing:skip-covered",
 ]
-markers = ["integration: needs Docker and external services (run with -m integration)"]
+markers = [
+    "integration: needs Docker and external services (run with -m integration)",
+    "host: rebuilds the machine it runs on; disposable hosts only (CI job Host recovery)",
+]
 
 [tool.coverage.run]
 branch = true

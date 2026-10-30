@@ -26,6 +26,8 @@ jobs:
       - run: uv run ruff check --output-format=github .
       - run: uv run ruff format --check .
       - run: uv run mypy
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
 
   test:
     name: Unit tests
@@ -67,6 +69,52 @@ jobs:
       - name: Run integration tests as root
         # As in production: volume data under /var/lib/docker is only readable by root.
         run: sudo --preserve-env=PATH .venv/bin/python -m pytest -m integration --no-cov -rs
+
+  host:
+    name: Host recovery
+    # A throwaway runner is the disposable host: bootstrap.sh installs drkit, a project and
+    # nginx are backed up and destroyed, and `drkit restore host` rebuilds them (DESIGN §7.3).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Bootstrap the host
+        run: sudo DRKIT_SPEC="$PWD" bash scripts/bootstrap.sh
+      - name: Bootstrap again (idempotent)
+        run: sudo DRKIT_SPEC="$PWD" bash scripts/bootstrap.sh
+      - name: Install nginx
+        # In production nginx comes from the host's playbook; the hardening playbook used
+        # here does not install it.
+        run: sudo apt-get install -y -qq nginx
+      - name: Pull service images
+        run: |
+          docker compose -f tests/integration/compose.yaml pull --quiet minio
+          docker compose -f tests/integration/demo/compose.yaml pull --quiet
+        env:
+          DB_PASSWORD: unused
+          WEB_PORT: "8080"
+      - run: uv sync --locked
+      - name: Back up, destroy and restore the host
+        run: >-
+          sudo --preserve-env=PATH env DRKIT_HOST_TEST=1
+          DRKIT_HOST_SUMMARY="$RUNNER_TEMP/host-summary.md"
+          .venv/bin/python -m pytest tests/host -m host --no-cov -rs -p no:cacheprovider
+      - name: Publish step timings
+        if: always()
+        run: |
+          [ -f "$RUNNER_TEMP/host-summary.md" ] && cat "$RUNNER_TEMP/host-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          sudo cp -r /var/lib/drkit/reports host-reports 2>/dev/null || mkdir host-reports
+          sudo chown -R "$(id -u)" host-reports
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: host-recovery-reports
+          path: host-reports/
+          retention-days: 30
 
   gitleaks:
     name: Secret scan
