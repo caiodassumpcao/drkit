@@ -24,10 +24,17 @@ retention:                            # applied with `restic forget` after every
 system:
   ansible:                            # optional; rebuilds the OS during `restore host`
     source: https://github.com/caiodassumpcao/server-hardening-kit.git   # git URL or local path
-    ref: v1.0.0                       # pin a tag or commit
-    playbook: site.yml                # relative to the repository root
-    extra_vars: { ssh_port: 2222 }
-    skip_tags: []                     # e.g. [ufw, ssh] for CI drills
+    ref: v1.1.0                       # pin a tag or commit
+    playbook: playbooks/site.yml      # relative to the repository root
+    extra_vars:                       # passed with -e; drkit runs `-i localhost, -c local`
+      hardening_target: localhost     # this kit targets the inventory group "hardening" by default
+      hardening_ssh_port: 2222
+      sysctl_hardening_ip_forward: true   # required on a Docker host
+      users_automation:
+        enabled: true
+        name: ansible
+        ssh_keys: ["ssh-ed25519 AAAA... ops@laptop"]
+    skip_tags: []                     # e.g. [ssh, ufw] where the run must not touch SSH access
   paths:                              # backed up every run; restored after Ansible if restore: true
     - path: /etc/nginx
       restore: true
@@ -37,7 +44,8 @@ system:
     - path: /var/spool/cron/crontabs
       restore: true
   tls:
-    strategy: reissue                 # reissue (certbot, needs email) | restore (/etc/letsencrypt)
+    strategy: reissue                 # reissue (certbot, needs email) | restore (add
+                                      # /etc/letsencrypt to paths)
     email: ops@example.com
 
 projects:
