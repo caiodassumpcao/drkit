@@ -1,5 +1,6 @@
 import io
 import json
+import os
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -568,6 +569,20 @@ class TestHooks:
         shop = MANIFEST.projects[0].model_copy(update={"path": tmp_path / "gone", "hooks": hooks})
         assert orchestrator.run_hooks(shop, "post_restore", directory=restored) == []
         assert (restored / "migrated").exists()
+
+    def test_hooks_target_the_project_stack(self, tmp_path: Path) -> None:
+        command = 'echo "$DRKIT_PROJECT $COMPOSE_PROJECT_NAME $COMPOSE_FILE $PWD" > env.txt'
+        shop = MANIFEST.projects[0].model_copy(
+            update={"path": tmp_path, "hooks": Hooks(pre_backup=[command])}
+        )
+        assert orchestrator.run_hooks(shop, "pre_backup") == []
+        files = os.pathsep.join(str(tmp_path / f) for f in shop.compose.files)
+        assert (tmp_path / "env.txt").read_text().split() == [
+            shop.name,
+            shop.compose_project,
+            files,
+            str(tmp_path),
+        ]
 
     def test_hook_output_is_redacted(self, tmp_path: Path) -> None:
         hooks = Hooks(pre_backup=["echo TOKEN=abc123xyz >&2; false"])

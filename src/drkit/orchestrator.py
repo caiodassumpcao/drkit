@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -314,13 +315,26 @@ def run_hooks(
     return errors
 
 
+def hook_env(project: Project, directory: Path) -> dict[str, str]:
+    """Environment of hooks: ``docker compose`` run from a hook targets the project's stack."""
+    return {
+        "DRKIT_PROJECT": project.name,
+        "COMPOSE_PROJECT_NAME": project.compose_project,
+        "COMPOSE_FILE": os.pathsep.join(str(f) for f in project.compose_files(directory)),
+    }
+
+
 def _run_hook(project: Project, stage: HookStage, command: str, directory: Path) -> str | None:
     if not directory.is_dir():
         return f"{stage} hook not run: project directory {directory} does not exist"
     log.info("hook.run", project=project.name, stage=stage)
     try:
         result = runner.run(
-            ["/bin/sh", "-c", command], timeout=HOOK_TIMEOUT_S, cwd=directory, check=False
+            ["/bin/sh", "-c", command],
+            timeout=HOOK_TIMEOUT_S,
+            cwd=directory,
+            plain_env=hook_env(project, directory),
+            check=False,
         )
     except DrkitError as exc:
         return f"{stage} hook failed: {exc.message}"
