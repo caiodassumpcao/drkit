@@ -80,6 +80,16 @@ class TestRun:
         )
         assert result.stdout == f"in\n{tmp_path}\nvalue"
 
+    def test_plain_env_is_passed_but_not_secret(self) -> None:
+        result = runner.run(
+            ["sh", "-c", 'echo "$DRKIT_PROJECT $X"'],
+            timeout=5,
+            env={"X": "super-secret"},
+            plain_env={"DRKIT_PROJECT": "artesempreco"},
+        )
+        assert result.stdout == "artesempreco super-secret\n"
+        assert runner.redact("artesempreco") == "artesempreco"
+
     def test_env_values_are_registered_as_secrets(self) -> None:
         runner.run(["true"], timeout=5, env={"X": "super-secret"})
         assert runner.redact("super-secret") == REDACTED

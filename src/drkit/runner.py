@@ -128,13 +128,15 @@ def run(
     *,
     timeout: float,
     env: Mapping[str, str] | None = None,
+    plain_env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     input: str | None = None,
     check: bool = True,
 ) -> CommandResult:
     """Run a command and capture its output.
 
-    Values passed in ``env`` are added on top of the current environment and treated as secrets.
+    Values passed in ``env`` are added on top of the current environment and treated as secrets;
+    ``plain_env`` adds variables that are not secret (names, paths) and must stay readable.
     Raises MissingDependencyError if the binary is not found, CommandTimeoutError on timeout and,
     when ``check`` is true, CommandError on a non-zero exit code.
     """
@@ -147,7 +149,7 @@ def run(
             input=input.encode() if input is not None else None,
             capture_output=True,
             timeout=timeout,
-            env=_environment(env),
+            env=_environment(env, plain_env),
             cwd=cwd,
             check=False,
         )
@@ -274,11 +276,13 @@ def _argv(args: Sequence[str]) -> tuple[str, ...]:
     return tuple(args)
 
 
-def _environment(extra: Mapping[str, str] | None) -> dict[str, str] | None:
-    if not extra:
+def _environment(
+    extra: Mapping[str, str] | None, plain: Mapping[str, str] | None = None
+) -> dict[str, str] | None:
+    if not extra and not plain:
         return None
-    redactor.add_all(extra.values())
-    return {**os.environ, **extra}
+    redactor.add_all((extra or {}).values())
+    return {**os.environ, **(plain or {}), **(extra or {})}
 
 
 def _decode(data: bytes) -> str:
