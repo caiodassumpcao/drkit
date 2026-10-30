@@ -12,7 +12,7 @@ import pytest
 from drkit import docker, runner
 from drkit import restic as restic_module
 from drkit.runmanifest import RunManifest
-from tests.integration.conftest import COMPOSE_FILE, HOST, Stack, Webhook
+from tests.integration.conftest import COMPOSE_FILE, HOST, Stack, Webhook, image_version
 
 pytestmark = pytest.mark.integration
 
@@ -41,11 +41,10 @@ def test_backs_up_both_engines_with_tags_and_run_manifest(make_drkit: Any, stack
     items = {f"{i.project}/{i.name}": i for i in run.items}
     assert set(items) == {"shop/shop", "shop/legacy", "blog/blog"}
     assert all(i.status == "ok" and i.bytes > 0 for i in run.items)
-    assert items["shop/shop"].engine_version is not None
-    assert items["shop/shop"].engine_version.startswith("16.")
-    assert items["shop/legacy"].engine_version == "8.4.9"
+    assert items["shop/shop"].engine_version == image_version("db")
+    assert items["shop/legacy"].engine_version == image_version("mysql")
     assert items["blog/blog"].engine_version is not None
-    assert "MariaDB" in items["blog/blog"].engine_version
+    assert items["blog/blog"].engine_version.startswith(f"{image_version('mariadb')}-MariaDB")
 
     snaps = snapshots_by_path(drkit)
     base = {"drkit", f"host:{HOST}", f"run:{run.run_id}"}

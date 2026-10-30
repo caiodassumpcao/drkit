@@ -33,6 +33,20 @@ HOST = "it-host"
 BUCKET = "drkit-it"
 
 
+def image_version(service: str, compose_file: Path = COMPOSE_FILE) -> str:
+    """Tag of the image a compose service runs (``mysql:8.4.9@sha256:…`` → ``8.4.9``).
+
+    Tests derive expected server versions from it, so image updates need no test changes.
+    """
+    image: str = yaml.safe_load(compose_file.read_text())["services"][service]["image"]
+    return image.split("@", 1)[0].rsplit(":", 1)[1]
+
+
+def version_line(version: str, parts: int) -> str:
+    """``16.9`` → ``16`` (parts=1); ``11.4.13`` → ``11.4`` (parts=2)."""
+    return ".".join(version.split(".")[:parts])
+
+
 @dataclass(frozen=True)
 class Stack:
     project: str

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import Webhook
+from tests.integration.conftest import Webhook, image_version, version_line
 from tests.integration.test_database_backup import MARIADB, MYSQL, POSTGRES
 
 pytestmark = pytest.mark.integration
@@ -34,9 +34,10 @@ def test_verify_restores_every_database(make_drkit: Any) -> None:
     assert report["repository_error"] is None
     databases = {db["label"]: db for db in report["databases"]}
     assert {label: (db["status"], db["image"]) for label, db in databases.items()} == {
-        "shop/db/shop": ("ok", "postgres:16"),
-        "shop/db/legacy": ("ok", "mysql:8.4"),
-        "blog/db/blog": ("ok", "mariadb:11.4"),
+        # The same version line as the server that was backed up.
+        "shop/db/shop": ("ok", f"postgres:{version_line(image_version('db'), 1)}"),
+        "shop/db/legacy": ("ok", f"mysql:{version_line(image_version('mysql'), 2)}"),
+        "blog/db/blog": ("ok", f"mariadb:{version_line(image_version('mariadb'), 2)}"),
     }
     assert all(db["tables"] >= 1 for db in databases.values())
     assert verify_containers() == []
