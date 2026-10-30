@@ -29,8 +29,9 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: mysql
         update-types: ["version-update:semver-major"]
+      # MariaDB minor versions are separate release lines (11.4 and 11.8 are both LTS).
       - dependency-name: mariadb
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     commit-message:
       prefix: test
       include: scope
