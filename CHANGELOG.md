@@ -7,6 +7,45 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-30
+
+Recovery of a whole server, from a fresh Ubuntu machine to green healthchecks.
+
+### Added
+
+- **`drkit restore host`.** Rebuilds the server in eight timed steps: preflight, the Ansible
+  playbook of `system.ansible` at its `ref` (run locally, with `requirements.yml` installed,
+  `skip_tags`, `extra_vars` from a private file and the full log in the reports directory),
+  the `system.paths` marked `restore: true`, systemd reload and `nginx -t`, every project
+  (each with its own steps, nested in the report), the TLS certificates (restored from the
+  backup, or issued again by certbot for the domains nginx serves), nginx and every
+  healthcheck, then a checklist: DNS records, drkit timers, restored units, pending reboot,
+  packages missing since the backup, and the RTO. `--skip-system` skips the playbook.
+- **`scripts/bootstrap.sh`.** Prepares Ubuntu 22.04 / 24.04 for drkit in one idempotent run:
+  Docker with the Compose plugin, restic and uv as pinned release binaries checked by
+  SHA-256, certbot, Python 3.12, ansible-core and drkit.
+- **Safety backup before `restore project`.** What exists of the project (running databases,
+  volumes, secrets, git state) is saved as `kind:pre-restore` snapshots first;
+  `--no-safety-backup` skips it.
+- Every restore sends a notification, on success and on failure.
+- `restore db` stops before changing anything when the target server is older than the one the
+  dump came from, or of another family (MySQL / MariaDB).
+- Hooks get `DRKIT_PROJECT`, `COMPOSE_PROJECT_NAME` and `COMPOSE_FILE`, so `docker compose` in a
+  hook reaches the project's stack.
+- `drkit doctor` requires certbot when `tls.strategy` is `reissue`.
+- Runbook: recovering a host, and where the keys come from.
+- CI rehearses a host recovery on every pull request with the server-hardening-kit playbook,
+  and runs shellcheck.
+
+### Changed
+
+- `restore project` has ten steps (the safety backup is step 1).
+- Safety snapshots carry an `item:<kind>` tag.
+- `examples/dr.yaml` uses server-hardening-kit v1.1.0 (`playbooks/site.yml`).
+- Integration tests read the expected server versions from their compose files, so image
+  updates need no test changes; Dependabot no longer proposes MariaDB minor versions (separate
+  release lines).
+
 ## [0.3.0] - 2026-10-29
 
 Restores: a database in place, or a whole project rebuilt from a single run.
@@ -123,7 +162,8 @@ First release: database backups to any S3-compatible storage, with retention and
 - Annotated example manifest, CI (lint, types, unit tests, build, Gitleaks), Dependabot,
   issue and pull request templates, `SECURITY.md`, `CONTRIBUTING.md`, ADRs 0001–0003.
 
-[Unreleased]: https://github.com/caiodassumpcao/drkit/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/caiodassumpcao/drkit/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/caiodassumpcao/drkit/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/caiodassumpcao/drkit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/caiodassumpcao/drkit/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/caiodassumpcao/drkit/releases/tag/v0.1.0

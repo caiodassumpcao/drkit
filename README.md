@@ -89,9 +89,8 @@ flowchart LR
 ## Quick start
 
 ```bash
-# 1. Install
-sudo apt-get install -y restic git pipx
-sudo pipx install git+https://github.com/caiodassumpcao/drkit.git
+# 1. Install drkit and what it needs (Docker, restic, git, Ansible, certbot); idempotent
+curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/main/scripts/bootstrap.sh | sudo bash
 
 # 2. Credentials (keep a copy OUTSIDE this server — see Security)
 sudo install -d -m 700 /etc/drkit
@@ -167,7 +166,7 @@ sudo drkit report               # recent runs, current RPO, last verification (M
 |---|---|
 | Someone dropped a table | `sudo drkit restore db shop` |
 | Bad deploy, corrupted volume, deleted directory | `sudo drkit restore project shop` |
-| Server is gone *(v0.4)* | `bootstrap.sh` on a new server → `sudo drkit restore host` |
+| Server is gone | `bootstrap.sh` on a new server → `sudo drkit restore host` |
 | Restore an older point in time | add `--run <run_id>` (see `drkit runs list`) |
 | See what would happen first | add `--dry-run` |
 | Resume after fixing a failed step | add `--from-step <n> --run <run_id>` (printed on failure) |
@@ -179,10 +178,13 @@ step and saves a report in `/var/lib/drkit/reports/`.
 - **`restore db`** dumps the current database into a safety snapshot first
   (`kind:pre-restore`, undoable), then restores the run's dump; PostgreSQL restores in a single
   transaction.
-- **`restore project`** clones the code at the recorded commit (plus uncommitted changes),
-  puts back compose files and secrets (`0600`), pulls the recorded images by digest, restores
-  databases and volumes, starts the project, runs `post_restore` hooks and waits for the
-  healthchecks. The previous project directory is moved aside, never deleted.
+- **`restore project`** first backs up what exists of the project (safety snapshots), then
+  clones the code at the recorded commit (plus uncommitted changes), puts back compose files
+  and secrets (`0600`), pulls the recorded images by digest, restores databases and volumes,
+  starts the project, runs `post_restore` hooks and waits for the healthchecks. The previous
+  project directory is moved aside, never deleted.
+
+Every restore is announced on the configured notification channels.
 
 For example:
 
@@ -190,22 +192,23 @@ For example:
 $ sudo drkit restore project shop --yes
 Restore shop from run 20261029T030000Z-a1f3 (restore 20261029T101500Z-7c2e)
 ...
-✓ 1. Clone the repository at the recorded commit (1.2s): commit 9c1e2b7d5a3f checked out in /srv/shop
-✓ 2. Restore compose files and secrets (0.8s): 1 compose file(s), 1 secret file(s) (mode 0600, original owner)
-✓ 3. Pull the images (0.9s): 2 service(s) pinned by digest, 0 pulled by tag
-✓ 4. Start the database services (7.4s): db ready
-✓ 5. Restore the databases (2.1s): shop/db/shop: 12 table(s)
-✓ 6. Restore the volumes (1.6s): shop/volume/uploads → shop_uploads
-✓ 7. Start the project (3.0s): 3 service(s) started
-✓ 8. Run post_restore hooks (4.2s): 1 hook(s) succeeded
-✓ 9. Healthchecks (2.5s): http://127.0.0.1:8080/health: HTTP 200 after 2.5s
+✓ 1. Safety backup of the current project (6.1s): 4 item(s) saved as restore:20261029T101500Z-7c2e: …
+✓ 2. Clone the repository at the recorded commit (1.2s): commit 9c1e2b7d5a3f checked out in /srv/shop
+✓ 3. Restore compose files and secrets (0.8s): 1 compose file(s), 1 secret file(s) (mode 0600, original owner)
+✓ 4. Pull the images (0.9s): 2 service(s) pinned by digest, 0 pulled by tag
+✓ 5. Start the database services (7.4s): db ready
+✓ 6. Restore the databases (2.1s): shop/db/shop: 12 table(s)
+✓ 7. Restore the volumes (1.6s): shop/volume/uploads → shop_uploads
+✓ 8. Start the project (3.0s): 3 service(s) started
+✓ 9. Run post_restore hooks (4.2s): 1 hook(s) succeeded
+✓ 10. Healthchecks (2.5s): http://127.0.0.1:8080/health: HTTP 200 after 2.5s
 
-Restore completed in 23.7s.
+Restore completed in 29.8s.
 ```
 
 Step-by-step procedures, including how to undo a restore: [runbook](docs/runbook.md).
 
-### Full server recovery *(v0.4)*
+### Full server recovery
 
 ```bash
 # On a fresh Ubuntu server
@@ -217,7 +220,16 @@ sudo drkit restore host --dry-run
 sudo drkit restore host
 ```
 
-The step-by-step human procedure — including DNS cutover — is in the [runbook](docs/runbook.md).
+`restore host` provisions the machine with your Ansible playbook (for example
+[server-hardening-kit](https://github.com/caiodassumpcao/server-hardening-kit)), puts back the
+system paths marked `restore: true`, restores every project, brings back the TLS certificates
+(from the backup, or reissued by certbot), starts nginx and waits for every healthcheck. It
+ends with a checklist (DNS records, timers, restored units, packages missing since the backup)
+and the measured RTO. CI rehearses it on every pull request: a runner is bootstrapped, backed
+up, destroyed and rebuilt.
+
+The step-by-step human procedure — including where the keys come from and the DNS cutover — is
+in the [runbook](docs/runbook.md).
 
 ## Disaster-recovery drill
 
@@ -258,7 +270,7 @@ drkit is built for **Ubuntu servers running Docker Compose projects** with datab
 - [x] **v0.1** — Database backup, retention, alerts
 - [x] **v0.2** — Volumes, secrets, project state, system paths, verification
 - [x] **v0.3** — Database and project restore
-- [ ] **v0.4** — Full host restore with Ansible
+- [x] **v0.4** — Full host restore with Ansible
 - [ ] **v1.0** — Automated DR drill with measured RPO/RTO
 
 ## Documentation
