@@ -17,6 +17,10 @@ DUMP_OPTIONS = (
     "--events",
     "--no-tablespaces",  # otherwise MySQL >= 8.0.21 requires the global PROCESS privilege
 )
+# GTIDs are on by default in recent MySQL. Recording the GTID set needs FLUSH TABLES (RELOAD
+# privilege) at dump time and SUPER to apply it at restore time; a logical restore does not
+# need it. mariadb-dump has no such option.
+MYSQL_ONLY_OPTIONS = ("--set-gtid-purged=OFF",)
 
 
 class MysqlSource(DatabaseSource):
@@ -44,10 +48,11 @@ class MysqlSource(DatabaseSource):
             env=env,
         ).stdout.strip()
 
+        options = [*DUMP_OPTIONS] if mariadb else [*DUMP_OPTIONS, *MYSQL_ONLY_OPTIONS]
         dump = stream_dump(
             ctx,
             docker.exec_args(
-                container, [dumper, "-u", user, *DUMP_OPTIONS, self.name], env_names=[PASSWORD_VAR]
+                container, [dumper, "-u", user, *options, self.name], env_names=[PASSWORD_VAR]
             ),
             label=dumper,
             filename=self.filename("sql"),

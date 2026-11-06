@@ -40,7 +40,8 @@ def test_mysql_dump(ctx: BackupContext, host: FakeHost) -> None:
     assert host.containers == [("shop", "mysql")]
     producer, consumer, kwargs = host.pipe_calls[0]
     assert producer == [
-        "docker", "exec", "-e", "MYSQL_PWD", "ctr", "mysqldump", "-u", "app", *OPTIONS, "legacy"
+        "docker", "exec", "-e", "MYSQL_PWD", "ctr", "mysqldump", "-u", "app", *OPTIONS,
+        "--set-gtid-purged=OFF", "legacy",
     ]  # fmt: skip
     assert consumer[4] == "shop/db/legacy.sql"
     assert kwargs["producer_env"] == {"MYSQL_PWD": "app-password-123"}
@@ -66,6 +67,7 @@ def test_mariadb_client_names(ctx: BackupContext, host: FakeHost) -> None:
     assert item.engine_version == "11.4.8-MariaDB-ubu2404"
     assert host.run_calls[0][5] == "mariadb"
     assert host.pipe_calls[0][0][5] == "mariadb-dump"
+    assert host.pipe_calls[0][0][8:] == [*OPTIONS, "legacy"], "mariadb-dump has no GTID option"
 
 
 def test_custom_credential_variables(ctx: BackupContext, host: FakeHost) -> None:
