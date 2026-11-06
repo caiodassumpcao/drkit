@@ -1,6 +1,6 @@
 [project]
 name = "drkit"
-version = "0.4.0"
+version = "1.0.0"
 description = "Backup and disaster recovery for Docker Compose servers, with automated recovery drills."
 readme = "README.md"
 license = "MIT"
@@ -9,7 +9,7 @@ authors = [{ name = "Caio Dassumpção Rodrigues", email = "caio.rodri.d@gmail.c
 requires-python = ">=3.12"
 keywords = ["backup", "disaster-recovery", "docker-compose", "restic", "devops"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "Operating System :: POSIX :: Linux",
