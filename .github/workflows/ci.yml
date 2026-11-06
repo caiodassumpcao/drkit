@@ -81,6 +81,38 @@ jobs:
           sudo --preserve-env=PATH,DRKIT_IT_VERSIONS
           .venv/bin/python -m pytest -m integration --no-cov -rs
 
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+      - name: pip-audit (runtime dependencies, as locked)
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt > requirements.txt
+          uvx pip-audit@2.10.1 --strict --require-hashes --disable-pip -r requirements.txt
+
+  image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build
+        run: docker build -t drkit:ci .
+      - name: Smoke test
+        run: |
+          docker run --rm drkit:ci --version
+          docker run --rm --entrypoint restic drkit:ci version
+      - name: Trivy (HIGH and CRITICAL with a fix available)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: drkit:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
   host:
     name: Host recovery
     # A throwaway runner is the disposable host: bootstrap.sh installs drkit, a project and
