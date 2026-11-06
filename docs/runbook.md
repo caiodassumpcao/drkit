@@ -249,14 +249,13 @@ Nothing on the lost server is needed. Before starting, have at hand:
    | 4 | Reload systemd and validate nginx | `nginx -t` may wait for the certificates of step 6. |
    | 5 | Restore the projects | Each project's ten steps, timed, in manifest order. |
    | 6 | TLS certificates | `restore`: from the backup. `reissue`: certbot, which needs the DNS already pointing here. |
-   | 7 | Reload nginx and run all healthchecks | The end of the RTO. |
+   | 7 | Start nginx and the restored units, run all healthchecks | Restored units that were enabled on the old server are enabled and started again. The end of the RTO. |
    | 8 | Recovery checklist and report | What is left to do, the package diff, the RTO. |
 
 6. **Do the checklist** printed at the end (also in the report): point the DNS records to the
    new server, enable the drkit timers here (`systemctl enable --now drkit-backup.timer
-   drkit-verify.timer drkit-prune.timer`), enable the restored units that should run, and
-   review the packages installed by hand on the old server that are missing here (add those
-   still needed to the playbook).
+   drkit-verify.timer drkit-prune.timer`), and review the packages installed by hand on the
+   old server that are missing here (add those still needed to the playbook).
 
    **Make sure the old server never backs up again under the same `host`** if it comes back:
    its runs would mix with the new server's. Disable its timers or change its `host`.
@@ -292,4 +291,10 @@ The CI job "Host recovery" runs this whole procedure on a disposable GitHub runn
 runner must stay reachable, so the playbook runs with `skip_tags: [ssh, ufw]` and with
 variables that keep the runner's own sudo (`users_purge_sudoers_files: []`), skip the
 bootloader (`auditd_grub_config: false`) and keep IP forwarding for Docker
-(`sysctl_hardening_ip_forward: true`). Use the same approach to rehearse on a scratch VM.
+(`sysctl_hardening_ip_forward: true`). Certificates are reissued by a local ACME server
+(Pebble), so the `reissue` path is exercised without public DNS. Use the same approach to
+rehearse on a scratch VM.
+
+For a quicker rehearsal of the data path, `sudo drkit drill --local` deploys a demo
+application on a disposable host, backs it up, destroys it and restores it, and reports the
+RPO, the RTO and the time of every step (DESIGN §8).
