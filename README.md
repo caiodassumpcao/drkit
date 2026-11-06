@@ -79,12 +79,15 @@ flowchart LR
 | Component | Version |
 |---|---|
 | OS | Ubuntu 22.04 / 24.04 LTS |
-| Python | 3.12+ |
-| restic | 0.17+ |
+| Python | 3.12+ (installed by `bootstrap.sh`) |
+| restic | 0.17+ (`bootstrap.sh` installs 0.19.1) |
 | Docker Engine + Compose v2 | 24+ |
 | git | any recent |
 | Ansible *(host restore only)* | 2.15+ |
 | Storage | Any S3-compatible bucket (AWS S3, Backblaze B2, Wasabi, MinIO…) |
+| Databases | PostgreSQL 14+, MySQL 8.4+, MariaDB 10.11+ (older releases are end of life) |
+
+CI tests the oldest supported and the newest release of each database engine.
 
 ## Quick start
 
@@ -233,23 +236,61 @@ in the [runbook](docs/runbook.md).
 
 ## Disaster-recovery drill
 
-Every push to `main` and every week, CI runs a full drill on a disposable runner:
+On every push to `main`, every pull request and every week, CI runs `drkit drill --local` on a
+disposable runner:
 
-1. Starts a demo stack (PostgreSQL, MySQL, an app writing uploads, Nginx) and seeds data.
-2. Runs `drkit backup`.
-3. **Destroys everything** — containers, volumes, project directory, Nginx config.
-4. Runs `drkit restore host`.
-5. Fails unless healthchecks pass and every row count and file checksum matches.
+1. Deploys [`examples/demo-app`](examples/demo-app) (PostgreSQL, MySQL, an HTTP app storing
+   uploads in a volume, behind nginx with TLS) and seeds deterministic data: 2000 rows in each
+   database and 40 files.
+2. Records fixtures (row counts and checksums, SHA-256 of every file) and runs `drkit backup`.
+3. **Destroys everything** — containers, volumes, images, project directory, nginx site,
+   certificate.
+4. Runs `drkit restore host --skip-system`.
+5. Fails unless the healthchecks pass and every fixture matches; publishes RPO, RTO and the
+   time of every step to the job summary and `drill-report.json`.
+
+A separate CI job rehearses a full host recovery with Ansible on every pull request
+([runbook](docs/runbook.md#rehearsing-on-ci)), including TLS certificates reissued by a local
+ACME server.
+
+The drill runs on any disposable Ubuntu host with nginx: `sudo drkit drill --local`.
 
 ### Measured results
 
-> Published from the CI drill once v1.0 lands.
+From the CI runs of the v1.0.0 code
+([drill](https://github.com/caiodassumpcao/drkit/actions/runs/42239074402),
+[host recovery](https://github.com/caiodassumpcao/drkit/actions/runs/42239073936)) on a GitHub
+Actions runner: Ubuntu 24.04, 4 vCPUs, 15.6 GiB, Docker 28.0, restic 0.19.1. Each new run
+publishes its own numbers in the job summary.
+
+**Drill** (`drkit drill --local`, demo application with PostgreSQL, MySQL and 40 uploaded
+files):
 
 | Metric | Value |
 |---|---|
-| RTO (restore start → healthy) | — |
-| RPO (drill) | — |
-| Data integrity | — |
+| RTO (restore start → all healthchecks green) | **49.9 s** |
+| RPO (backup end → disaster) | **15.6 s** (the drill destroys right after backing up; in production the RPO is the backup interval) |
+| Data integrity | **identical**: 2000 + 2000 rows, 40 files |
+| Backup run | 8.4 s |
+
+| Restore step | Time |
+|---|---:|
+| Preflight | 0.8 s |
+| Restore system paths (nginx site) | 2.8 s |
+| Validate nginx | 0.3 s |
+| Restore the project | 42.9 s |
+| ↳ compose files and secrets | 4.3 s |
+| ↳ pull the images (removed by the disaster) | 20.6 s |
+| ↳ start the database services | 9.2 s |
+| ↳ restore both databases | 3.2 s |
+| ↳ restore the uploads volume | 1.6 s |
+| ↳ start the project | 3.9 s |
+| TLS certificate (restored) | 1.4 s |
+| nginx and healthchecks | 1.6 s |
+
+**Full host recovery** (`restore host` with the server-hardening-kit playbook, one project,
+certificates reissued by a local ACME server): RTO **268.4 s**, of which the Ansible playbook
+takes 247.0 s, the project 11.8 s and the certificate 3.3 s.
 
 ## Security
 
@@ -271,7 +312,30 @@ drkit is built for **Ubuntu servers running Docker Compose projects** with datab
 - [x] **v0.2** — Volumes, secrets, project state, system paths, verification
 - [x] **v0.3** — Database and project restore
 - [x] **v0.4** — Full host restore with Ansible
-- [ ] **v1.0** — Automated DR drill with measured RPO/RTO
+- [x] **v1.0** — Automated DR drill with measured RPO/RTO
+
+## Compatibility
+
+drkit follows [Semantic Versioning](https://semver.org/). From 1.0, the public interface is the
+CLI (commands, options, `--json` fields, exit codes), the manifest schema (`version: 1`) and
+the run-manifest schema (`"schema": 1`, with its snapshot tags). Anything that breaks one of
+them is a new major version; minor versions only add. A newer 1.x always restores backups
+made by an older one. Details: [DESIGN §16](docs/DESIGN.md#16-compatibility-from-10).
+
+## Docker image
+
+The [`Dockerfile`](Dockerfile) builds drkit with the Docker CLI, Compose, git and restic, for
+hosts where installing Python tools is not wanted. It drives the host's Docker through the
+socket, so mount what it backs up at the same paths:
+
+```bash
+docker build -t drkit .
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v /etc/drkit:/etc/drkit:ro \
+  -v /srv:/srv -v /var/lib/docker/volumes:/var/lib/docker/volumes:ro \
+  -v /var/lib/drkit:/var/lib/drkit drkit backup
+```
+
+CI scans the image with Trivy and fails on any fixable HIGH or CRITICAL finding.
 
 ## Documentation
 

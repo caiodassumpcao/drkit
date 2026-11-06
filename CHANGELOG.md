@@ -7,6 +7,52 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-06
+
+The recovery is proven on every change: a drill backs up, destroys and restores a demo
+application in CI and publishes the measured RPO and RTO. The CLI, the manifest and the run
+manifest are now stable (see Compatibility below).
+
+### Added
+
+- **`drkit drill --local`.** On a disposable host: deploys `examples/demo-app` (PostgreSQL,
+  MySQL and an HTTP app storing uploads in a volume, behind nginx with TLS), seeds
+  deterministic data, backs it up, destroys the application with its volumes, images, nginx
+  site and certificate, runs `restore host --skip-system` and checks every row and file.
+  Reports RPO, RTO and every step's time (report file, `--json`, CI job summary) and records
+  the last drill in `state.json`, which `drkit report` now shows.
+- **CI drill** (`drill.yml`): on pushes to `main`, pull requests, weekly and on demand, with the
+  job summary and `drill-report.json` as an artifact; README badge and measured results.
+- **Release pipeline** (`release.yml`): a signed version tag builds the sdist and wheel,
+  attests their build provenance and publishes the release with its CHANGELOG notes.
+- **Docker image** (`Dockerfile`) with the Docker CLI, Compose, git and restic built from
+  source with patched dependencies; CI scans it with Trivy.
+- **pip-audit** of the locked runtime dependencies in CI.
+- `restore host` enables again the restored systemd units that were enabled on the old server
+  (the host inventory now records enabled units).
+- **Configuration reference**: `docs/configuration.md` documents every key of `dr.yaml`.
+- CI rehearses certificate reissue end to end against a local ACME server (Pebble).
+
+### Changed
+
+- **Supported databases:** PostgreSQL ≥ 14, MySQL ≥ 8.4, MariaDB ≥ 10.11 (older releases are
+  end of life). Integration tests run against the oldest supported and the newest release of
+  each engine (PostgreSQL 18, MySQL 26.10, MariaDB 13.0).
+- restic 0.19.1 (`bootstrap.sh`, CI).
+
+### Fixed
+
+- MySQL backups failed on servers with GTIDs enabled (the default of recent MySQL): dumps now
+  run with `--set-gtid-purged=OFF`, which needs neither RELOAD at backup time nor SUPER at
+  restore time.
+- `drkit doctor` read tool versions from stdout only (nginx prints its version on stderr).
+
+### Compatibility
+
+From 1.0 drkit follows Semantic Versioning. The CLI (commands, options, `--json` fields, exit
+codes), the manifest (`version: 1`) and the run manifest (`"schema": 1` and its snapshot tags)
+only change incompatibly in a new major version.
+
 ## [0.4.0] - 2026-10-30
 
 Recovery of a whole server, from a fresh Ubuntu machine to green healthchecks.
@@ -162,7 +208,8 @@ First release: database backups to any S3-compatible storage, with retention and
 - Annotated example manifest, CI (lint, types, unit tests, build, Gitleaks), Dependabot,
   issue and pull request templates, `SECURITY.md`, `CONTRIBUTING.md`, ADRs 0001–0003.
 
-[Unreleased]: https://github.com/caiodassumpcao/drkit/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/caiodassumpcao/drkit/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/caiodassumpcao/drkit/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/caiodassumpcao/drkit/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/caiodassumpcao/drkit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/caiodassumpcao/drkit/compare/v0.1.0...v0.2.0
