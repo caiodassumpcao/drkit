@@ -33,7 +33,7 @@ services:
       retries: 90
 
   app:
-    image: python:3.13.12-alpine3.22@sha256:41351b07080ccfaa27bf38dde20de79ee6a0ac74a58c00c6d7a7d96ac4e69716
+    image: python:3.14.5-alpine3.22@sha256:6b91e66ab2a880ce9ca5a1b91c70f45963ff71ff68268df056336e1a657d5efd
     command: ["python", "/app/app.py"]
     environment:
       UPLOADS_DIR: /data/uploads
