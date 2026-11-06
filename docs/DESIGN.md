@@ -1,6 +1,6 @@
 # drkit — Design Specification
 
-> Status: **Draft v1** · Owner: Caio Dassumpção Rodrigues
+> Status: **v1.0** · Owner: Caio Dassumpção Rodrigues
 > This document is the technical source of truth for `drkit`. Any change in behavior must be reflected here (or in an ADR) in the same pull request.
 
 ---
@@ -30,7 +30,7 @@
 |---|---|
 | OS | Ubuntu 22.04 / 24.04 LTS |
 | Apps | Deployed with Docker Compose v2 from a git repository |
-| Databases | PostgreSQL ≥ 13, MySQL ≥ 8 / MariaDB ≥ 10.6, running as Compose services |
+| Databases | PostgreSQL ≥ 14, MySQL ≥ 8.4, MariaDB ≥ 10.11 (older releases are end of life), running as Compose services. CI tests the oldest supported and the newest release of each engine (§12) |
 | Proxy | Nginx on the host (or as a Compose service) |
 | System config | Reproducible via an Ansible playbook (e.g. `server-hardening-kit`) |
 | Privileges | `drkit` runs as root (needs Docker socket and volume mountpoints) |
@@ -122,7 +122,7 @@ src/drkit/
 │   ├── host.py          # restore host (§7.3)
 │   └── tls.py           # certificates nginx uses: restore or certbot reissue
 ├── verify.py            # restic check + DB restore test in ephemeral container
-├── drill.py             # local DR drill (CI)
+├── drill.py             # drkit drill --local (§8)
 ├── health.py            # HTTP healthchecks with retry/backoff
 ├── notify.py            # telegram, generic webhook (Slack-compatible)
 └── report.py            # JSON + Markdown reports (runs, restore, drill)
@@ -247,7 +247,7 @@ Validation rules (must have unit tests):
 | Kind | How | restic call |
 |---|---|---|
 | `db` (postgres) | `docker exec <ctr> pg_dump -U <user> -Fc <db>` + `pg_dumpall -U <user> --globals-only` (roles); user from `$<user_env>` in the container, version from `SHOW server_version` | `restic backup --stdin --stdin-filename <project>/db/<db>.dump` (streamed, no temp file — ADR-0005), and `<db>.globals.sql` as a second snapshot of the same item (`globals_snapshot`) |
-| `db` (mysql) | `docker exec -e MYSQL_PWD <ctr> mysqldump -u <user> --single-transaction --routines --triggers --events --no-tablespaces <db>`; user and password from `$<user_env>` / `$<password_env>` in the container, password handed over through drkit's environment (never argv); `mariadb-dump` / `mariadb` when the image has them (MariaDB 11) | same, `<db>.sql` |
+| `db` (mysql) | `docker exec -e MYSQL_PWD <ctr> mysqldump -u <user> --single-transaction --routines --triggers --events --no-tablespaces --set-gtid-purged=OFF <db>` (GTIDs are on by default in recent MySQL; recording the GTID set would need the RELOAD privilege to dump and SUPER to restore, and a logical restore does not use it); user and password from `$<user_env>` / `$<password_env>` in the container, password handed over through drkit's environment (never argv); `mariadb-dump` / `mariadb` when the image has them (MariaDB 11) | same, `<db>.sql` |
 | `volume` | resolve mountpoint via `docker volume ls --filter label=com.docker.compose.project=<p> --filter label=com.docker.compose.volume=<v>` + `docker volume inspect`; the mountpoint must be readable from the host — drkit runs as root on the Docker host (Docker Desktop keeps volumes inside its VM) | `restic backup <mountpoint>` (incremental: unchanged files are skipped) |
 | `secrets` | project-relative files (`projects[].secrets`); a missing file fails the item (ADR-0006) | `restic backup <files>` |
 | `project` | git remote, HEAD SHA, dirty flag (`git -c safe.directory=<path>`, as the checkout usually belongs to a deploy user); `git diff HEAD --binary` patch if tracked files changed (untracked files are only logged); image of each running service from its container labels, pinned with `docker image inspect` RepoDigests (`postgres:16.4@sha256:…`; local builds keep their reference) | `restic backup <compose files>`; patch streamed as `<project>/project/dirty.patch` (`patch_snapshot`); git state and images go to the run manifest `projects` |
@@ -365,8 +365,8 @@ Runs on a **fresh Ubuntu server** after `scripts/bootstrap.sh` and after the ope
 | 4 | `systemctl daemon-reload`; `nginx -t` when `/etc/nginx/nginx.conf` exists (nginx is installed by the playbook, never by drkit). If the only errors are missing `/etc/letsencrypt` files and `tls` is configured, the check waits for step 6 |
 | 5 | `restore project` for each project, in manifest order, with one restore ID: each project's ten steps are nested steps of this one, with its healthchecks deferred to step 7. A failing project stops the host restore; the error names the `restore project … --from-step` that resumes that project |
 | 6 | TLS (`restore/tls.py`): `strategy: restore` restores `/etc/letsencrypt`, which must be in `system.paths` (checked when planning); `strategy: reissue` reads the certificates nginx uses (`ssl_certificate /etc/letsencrypt/live/<name>/…`) and the `server_name` of the same blocks in the enabled configuration, stops nginx and issues each missing one with `certbot certonly --standalone` (the DNS must already point to the server) |
-| 7 | `nginx -t`, `systemctl enable --now nginx`, `systemctl reload nginx`; then every healthcheck of every project. The RTO clock stops here |
-| 8 | Checklist (report notes): DNS records for the domains nginx serves and the server's addresses; enable the drkit timers and make sure the old server no longer backs up under the same `host`; restored units to enable; TLS renewal; pending reboot; safety snapshots. Inventory diff: packages installed by hand before but missing now, and new ones; OS and Docker versions. RTO: from the first step that ran to the last green healthcheck |
+| 7 | `nginx -t`, `systemctl enable --now nginx`, `systemctl reload nginx`; `systemctl enable --now` the restored units that were enabled on the old server (the inventory records `enabled_units`); then every healthcheck of every project. The RTO clock stops here |
+| 8 | Checklist (report notes): DNS records for the domains nginx serves and the server's addresses; enable the drkit timers and make sure the old server no longer backs up under the same `host`; TLS renewal; restored units only when the backup predates `enabled_units`; pending reboot; safety snapshots. Inventory diff: packages installed by hand before but missing now, and new ones; OS and Docker versions. RTO: from the first step that ran to the last green healthcheck |
 
 On a CI runner the playbook can skip the tags that would lock the runner out (e.g. `ssh`, `ufw`); the host-recovery job does so (§13).
 
@@ -374,16 +374,20 @@ On a CI runner the playbook can skip the tags that would lock the runner out (e.
 
 ## 8. DR drill
 
-`drkit drill --local` — end-to-end proof, designed to run on a disposable machine (GitHub Actions `ubuntu-latest` runner).
+`drkit drill --local` (`drill.py`) — end-to-end proof, run as root on a disposable machine (a GitHub Actions runner in `drill.yml`). It touches only its own resources (`drkit-demo*` compose projects, `/srv/drkit-demo`, its nginx site on ports 18080/18443 and its certificate), but removes their images. Each step is timed through the restore pipeline (§7).
 
-1. Start MinIO (S3) and `examples/demo-app` (Compose: PostgreSQL + MySQL + small HTTP app writing to an `uploads` volume, behind Nginx). Seed deterministic data and compute **fixtures** (row counts, checksums of uploaded files).
-2. `drkit init` + `drkit backup`. Record backup end time.
-3. **Disaster:** `docker compose down -v`, delete project dir, remove nginx site config, prune images.
-4. `drkit restore host --skip-system` (Ansible step with `skip_tags` safe for CI, or skipped).
-5. Validate: healthchecks green + fixtures identical.
-6. Report: RPO (disaster time − backup end), RTO (restore start → healthy), per-step timings, data integrity result. Write `$GITHUB_STEP_SUMMARY` and upload `drill-report.json` as artifact.
+| # | Step |
+|---|---|
+| 1 | Prepare: root; restic, Docker, Compose, git, nginx and openssl present; leftovers of a previous drill removed |
+| 2 | Start the storage: MinIO from `examples/demo-app/storage/compose.yaml`. It survives the disaster |
+| 3 | Deploy `examples/demo-app` (shipped in the wheel): a git repository, a checkout in `/srv/drkit-demo`, a `.env` with random passwords, `compose up --wait` (PostgreSQL, MySQL, an HTTP app storing uploads in a volume), an nginx site with a self-signed certificate under `/etc/letsencrypt/live/drkit-demo.test` |
+| 4 | Seed deterministic data — 2000 PostgreSQL rows, 2000 MySQL rows, 40 files (1–64 KiB) uploaded through nginx — and record **fixtures**: row counts and checksums of every row, SHA-256 of every file read back through nginx |
+| 5 | Write a manifest (both databases, the volume, `.env`, the nginx site and certificate in `system.paths`, `tls.strategy: restore`, a healthcheck through nginx), `drkit init`, `drkit backup`. The run must be `ok`; its end time is recorded |
+| 6 | **Disaster:** `docker compose down --volumes --rmi all`, project directory, nginx site and certificate removed. Its time is recorded |
+| 7 | `restore host --skip-system` (Ansible is covered by the host-recovery job, §12): its steps are nested in the drill report |
+| 8 | Validate: fixtures identical, HTTPS through nginx answers |
 
-Drill fails (non-zero) on any mismatch.
+Report (`$DRKIT_STATE_DIR/reports/drill-<id>.json`, `--json`, and `$GITHUB_STEP_SUMMARY` when set): RPO (disaster − backup end), RTO (restore start → all healthchecks green), per-step timings, data integrity, environment (OS, CPUs, memory, tool versions, runner image). The outcome is recorded in `state.json` (`last_drill`) and shown by `drkit report`. Exit code `1` on any failure or mismatch.
 
 ---
 
@@ -439,18 +443,19 @@ Drill fails (non-zero) on any mismatch.
 | Level | Tooling | Scope |
 |---|---|---|
 | Unit | pytest, ≥ 85 % coverage on non-IO modules | config validation, tag/command building, redaction, run manifest, retention args, step pipeline |
-| Integration | pytest marker `integration`, Docker Compose fixtures (`tests/integration/compose.yaml`, images pinned by digest: MinIO via the community `pgsty/minio` build since upstream images are no longer published, PostgreSQL, MySQL, MariaDB, a BusyBox app with a volume), run as root with `--no-cov` in CI (volume data is root-only, as in production; the full-run test is skipped where volume data is unreachable) | each source backs up; dump-failure handling; retention; a full run with every item kind; stopped services restart after a failure; verify restores each engine; prune; `restore db` with its safety dumps on each engine; `restore project` rebuilds a destroyed demo project (`tests/integration/demo/`: containers, volumes and directory removed) with identical rows, file checksums and a green healthcheck |
-| Host | pytest marker `host`, only as root with `DRKIT_HOST_TEST=1` (destructive), CI job `Host recovery` on a throwaway runner | `bootstrap.sh` (twice), then backup → destroy a project, its volumes, nginx site, certificates and units → `restore host` with a real playbook → identical data and configuration, nginx serving, per-step timings in the job summary |
-| End-to-end | `drkit drill --local` in CI | full host recovery |
+| Integration | pytest marker `integration`, run twice in CI: against the newest release of each database engine and, with `DRKIT_IT_VERSIONS=oldest` (`tests/integration/oldest/compose.yaml`), the oldest supported one. Docker Compose fixtures (`tests/integration/compose.yaml`, images pinned by digest: MinIO via the community `pgsty/minio` build since upstream images are no longer published, PostgreSQL, MySQL, MariaDB, a BusyBox app with a volume), run as root with `--no-cov` in CI (volume data is root-only, as in production; the full-run test is skipped where volume data is unreachable) | each source backs up; dump-failure handling; retention; a full run with every item kind; stopped services restart after a failure; verify restores each engine; prune; `restore db` with its safety dumps on each engine; `restore project` rebuilds a destroyed demo project (`tests/integration/demo/`: containers, volumes and directory removed) with identical rows, file checksums and a green healthcheck |
+| Host | pytest marker `host`, only as root with `DRKIT_HOST_TEST=1` (destructive), CI job `Host recovery` on a throwaway runner | `bootstrap.sh` (twice), then backup → destroy a project, its volumes, nginx site, certificates and an enabled unit → `restore host` with a real playbook and `tls.strategy: reissue` against a local ACME server (Pebble + pebble-challtestsrv, no public DNS) → identical data and configuration, nginx serving the new certificate, the unit enabled again, per-step timings in the job summary |
+| End-to-end | `drkit drill --local` in CI (§8) | backup → disaster → restore, with `tls.strategy: restore`; RPO/RTO measured |
 | Static | ruff (lint + format), mypy `--strict` | everything |
 
 ---
 
 ## 13. CI/CD (GitHub Actions)
 
-- `ci.yml` (push/PR): ruff, mypy, shellcheck, unit tests + coverage, integration tests, host recovery (§12), build wheel + Docker image, Gitleaks, pip-audit, Trivy image scan.
-- `drill.yml` (push to `main` + weekly cron + manual): DR drill, publishes summary + artifact; status badge in README.
-- `release.yml` (tag `v*`): build, GitHub Release with notes from `CHANGELOG.md`, attach wheel.
+- `ci.yml` (push/PR): ruff, mypy, shellcheck, unit tests + coverage, build sdist + wheel, integration tests against the oldest and the newest database releases, host recovery (§12), Docker image build + smoke test + Trivy (fails on any HIGH/CRITICAL finding with a fix available), pip-audit on the locked runtime dependencies, Gitleaks.
+- `drill.yml` (push to `main`, pull requests, weekly cron, manual): DR drill (§8), job summary + `drill-report.json` artifact; status badge in README.
+- `release.yml` (signed tag `v*`, pushed once CI and the drill are green): checks the tag matches the package version, builds sdist + wheel, attests their build provenance (`actions/attest-build-provenance`), publishes the GitHub Release with both and the notes of that version from `CHANGELOG.md`.
+- `Dockerfile`: drkit with the Docker CLI, Compose, git and restic, on pinned bases. restic is built from its checksummed release source with a current Go toolchain and patched dependencies, since release binaries keep the advisories of the Go they were built with.
 - Actions are pinned by commit SHA (with the version as a comment) and test images by digest; Dependabot updates uv, GitHub Actions and Docker Compose images.
 
 ---
@@ -536,13 +541,26 @@ Each phase = one branch, one PR, one release tag. A phase is done only when **al
 ### Phase 5 — DR drill & v1.0 (`feat/dr-drill`, `v1.0.0`)
 - `examples/demo-app`, `drill.py`, `drill.yml` (push + weekly), step summary + artifact, README badge.
 - `docs/configuration.md` complete; README "Measured results" filled with real drill numbers.
-- Dockerfile + Trivy, `release.yml`, CHANGELOG for 1.0.0.
+- Dockerfile + Trivy, pip-audit, `release.yml` with build provenance, CHANGELOG for 1.0.0.
+- TLS reissue end to end against Pebble; enabled units restored; supported database versions with an oldest/newest test matrix; compatibility policy (§16).
 
 **Done when:** drill passes in CI with fixtures identical, RTO/RPO published, release `v1.0.0` created.
 
 ---
 
-## 16. ADR index
+## 16. Compatibility (from 1.0)
+
+drkit follows [Semantic Versioning](https://semver.org/). Its public interface is:
+
+- **The CLI:** command names, options and their meaning, `--json` output fields, and the exit codes of §10.
+- **The manifest:** `dr.yaml` schema `version: 1` (§4).
+- **The run manifest:** schema `"schema": 1` (§5.4), and the snapshot tags of §5.3, since restores and retention depend on them.
+
+A change that breaks any of these is a new major version. Minor versions may add commands, options, `--json` fields, optional manifest keys and optional run-manifest fields; a newer drkit always reads the run manifests and repositories of an older 1.x. Log events, human-readable output, report layouts and the Docker image's contents are not part of the interface.
+
+---
+
+## 17. ADR index
 
 | # | Title |
 |---|---|
