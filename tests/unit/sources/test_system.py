@@ -89,6 +89,7 @@ class TestInventory:
         outputs = {
             "dpkg": "bash\tinstall\ncurl\t\t\tdeinstall\nbroken-line\n",
             "apt-mark": "curl\ndocker-ce\n",
+            "systemctl": "app-worker.service enabled enabled\nnginx.service enabled enabled\n",
             "docker": "29.8.0\n",
         }
 
@@ -111,14 +112,16 @@ class TestInventory:
         assert document["os_release"] == {"NAME": "Ubuntu", "VERSION_ID": "24.04", "ID": "ubuntu"}
         assert document["packages"] == {"bash": "install", "curl": "deinstall"}
         assert document["manual_packages"] == ["curl", "docker-ce"]
+        assert document["enabled_units"] == ["app-worker.service", "nginx.service"]
         assert document["docker"] == "29.8.0"
 
     def test_missing_tools_leave_fields_empty(
         self, commands: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        del commands["dpkg"], commands["apt-mark"]
+        del commands["dpkg"], commands["apt-mark"], commands["systemctl"]
         monkeypatch.setattr(system, "OS_RELEASE", tmp_path / "missing")
         inventory = system.collect_inventory()
         assert inventory["packages"] is None
         assert inventory["manual_packages"] is None
+        assert inventory["enabled_units"] is None
         assert inventory["os_release"] is None

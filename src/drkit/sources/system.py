@@ -40,6 +40,7 @@ def collect_inventory() -> dict[str, Any]:
     """OS, kernel and packages. A missing tool (e.g. no dpkg) leaves its field null."""
     selections = _command(["dpkg", "--get-selections"])
     manual = _command(["apt-mark", "showmanual"])
+    units = _command(["systemctl", "list-unit-files", "--state=enabled", "--no-legend", "--plain"])
     return {
         "collected_at": datetime.now(UTC).isoformat(),
         "os_release": parse_os_release(_read(OS_RELEASE)),
@@ -47,7 +48,13 @@ def collect_inventory() -> dict[str, Any]:
         "docker": _command(["docker", "version", "--format", "{{.Server.Version}}"]),
         "packages": parse_selections(selections) if selections is not None else None,
         "manual_packages": manual.split() if manual is not None else None,
+        "enabled_units": parse_unit_files(units) if units is not None else None,
     }
+
+
+def parse_unit_files(text: str) -> list[str]:
+    """``systemctl list-unit-files --no-legend`` → unit names (first column)."""
+    return [line.split()[0] for line in text.splitlines() if line.strip()]
 
 
 def parse_os_release(text: str | None) -> dict[str, str] | None:

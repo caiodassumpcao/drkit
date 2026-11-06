@@ -152,7 +152,7 @@ def test_plan_has_the_eight_steps(setup: Any) -> None:
         "Reload systemd and validate nginx",
         "Restore the projects",
         "TLS certificates",
-        "Reload nginx and run all healthchecks",
+        "Start nginx and the restored units, run all healthchecks",
         "Recovery checklist and report",
     ]
     assert restore_plan.steps[1].plan == ("no playbook configured (system.ansible)",)
@@ -520,6 +520,7 @@ class TestSystem:
         monkeypatch.setattr(health, "wait_all", lambda checks: results)
         (tmp_path / "nginx").mkdir()
         (tmp_path / "nginx" / "nginx.conf").write_text("events {}\n")
+        setup[1].documents["/system/inventory.json"] = "{}"
         host = host_state(setup)
         assert host_module.start_and_check(host) == "nginx running; 1 healthcheck(s) green"
         assert ["systemctl", "enable", "--now", "nginx"] in commands
@@ -587,7 +588,8 @@ class TestSystem:
         )
         assert "no longer backs up as prod-01" in host.notes[1]
         assert host.notes[2].startswith(
-            "Units restored but not enabled by drkit: app-worker.service, app-cleanup.timer"
+            "Units restored but not enabled by drkit (this backup does not say which were "
+            "enabled): app-worker.service, app-cleanup.timer"
         )
         assert host.notes[3] == "TLS: check that renewal works (`certbot renew --dry-run`)"
         assert host.notes[4].startswith("A reboot is pending")
@@ -640,3 +642,49 @@ def test_full_plan_runs_and_measures_rto(setup: Any, monkeypatch: pytest.MonkeyP
     assert report.facts["rto_s"] >= 0
     assert report.notes[0].startswith("DNS: point your domains to this server")
     assert report.to_dict()["steps"][4]["substeps"][0]["substeps"][0]["title"] == "Clone"
+
+
+def test_units_enabled_before_are_enabled_again(
+    setup: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, restic, projects = setup
+    units = tmp_path / "systemd"
+    units.mkdir()
+    for name in ("app-worker.service", "app-cleanup.timer", "app-old.service"):
+        (units / name).write_text("[Unit]\n")
+    loaded = manifest(
+        tmp_path,
+        paths=[
+            {"path": str(tmp_path / "letsencrypt")},
+            {"path": str(units), "include": ["app-*"], "restore": True},
+        ],
+    )
+    restic.documents["/system/inventory.json"] = json.dumps(
+        {"enabled_units": ["app-worker.service", "app-cleanup.timer", "ssh.service"]}
+    )
+    calls: list[list[str]] = []
+    code = 0
+
+    def run(args: Sequence[str], **kwargs: Any) -> CommandResult:
+        calls.append(list(args))
+        return CommandResult(tuple(args), code, "", "Unit app-worker.service failed", 0.0)
+
+    monkeypatch.setattr(runner, "run", run)
+    monkeypatch.setattr(health, "wait_all", lambda checks: [])
+    host = host_state((loaded, restic, projects))
+
+    detail = host_module.start_and_check(host)
+
+    assert calls == [
+        ["systemctl", "enable", "--now", "app-cleanup.timer", "app-worker.service"],
+    ]
+    assert detail == ("2 unit(s) enabled: app-cleanup.timer, app-worker.service; no healthcheck")
+    # Enabled again by drkit: nothing left for the operator to do about them.
+    monkeypatch.setattr(host_module, "collect_inventory", lambda: {})
+    monkeypatch.setattr(host_module, "_addresses", lambda: [])
+    host_module.checklist(host)
+    assert not any("Units restored" in note for note in host.notes)
+
+    code = 1
+    with pytest.raises(CommandError, match="cannot enable the restored units"):
+        host_module.start_and_check(host)

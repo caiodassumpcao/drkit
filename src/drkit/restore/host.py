@@ -64,10 +64,20 @@ class HostRestore:
     healthy_at: float | None = None
     notes: list[str] = field(default_factory=list)
     facts: dict[str, Any] = field(default_factory=dict)
+    _inventory: dict[str, Any] | None = None
 
     @property
     def manifest(self) -> Manifest:
         return self.loaded.manifest
+
+    def backed_up_inventory(self) -> dict[str, Any]:
+        """The inventory of the old server, from the run (empty if the run has none)."""
+        if self._inventory is None:
+            self._inventory = {}
+            if self.inventory is not None and self.inventory.snapshot is not None:
+                document = self.restic.dump(self.inventory.snapshot, f"/{INVENTORY_FILENAME}")
+                self._inventory = json.loads(document)
+        return self._inventory
 
     def timed(self, step: Step) -> Step:
         """Start the RTO clock with the first step that runs (also when resuming)."""
@@ -156,10 +166,11 @@ def plan(
         ),
         Step("TLS certificates", lambda: restore_tls(host), _tls_plan(host)),
         Step(
-            "Reload nginx and run all healthchecks",
+            "Start nginx and the restored units, run all healthchecks",
             lambda: start_and_check(host),
             (
                 "nginx -t, then start or reload nginx",
+                "systemctl enable --now the restored units that were enabled at backup time",
                 *(
                     f"GET {check.url} → {check.expect_status}"
                     for project in manifest.projects
@@ -365,7 +376,8 @@ def restore_tls(host: HostRestore) -> str:
 
 
 def start_and_check(host: HostRestore) -> str:
-    """Step 7: nginx serves again, and every project answers its healthchecks."""
+    """Step 7: nginx serves again, the units that ran before run again, and every project
+    answers its healthchecks."""
     details = []
     if (host.nginx_dir / "nginx.conf").is_file():
         result = _nginx_test()
@@ -377,6 +389,18 @@ def start_and_check(host: HostRestore) -> str:
         runner.run(["systemctl", "enable", "--now", "nginx"], timeout=COMMAND_TIMEOUT_S)
         runner.run(["systemctl", "reload", "nginx"], timeout=COMMAND_TIMEOUT_S)
         details.append("nginx running")
+    units = _units_to_enable(host)
+    if units:
+        result = runner.run(
+            ["systemctl", "enable", "--now", *units], timeout=COMMAND_TIMEOUT_S, check=False
+        )
+        if not result.ok:
+            raise CommandError(
+                f"cannot enable the restored units {', '.join(units)}: "
+                f"{runner.failure_detail(result, max_lines=3)}",
+                hint="check them with `systemctl status <unit>`; resume with --from-step 7",
+            )
+        details.append(f"{len(units)} unit(s) enabled: {', '.join(units)}")
     checks = [check for project in host.manifest.projects for check in project.healthchecks]
     results = health.wait_all(checks)
     failed = [result for result in results if not result.ok]
@@ -407,13 +431,15 @@ def checklist(host: HostRestore) -> str:
         f"drkit-verify.timer drkit-prune.timer`), and make sure the old server, if it comes "
         f"back, no longer backs up as {host.manifest.host}"
     )
-    units = _restored_units(host.manifest.system.paths)
-    if units:
-        host.notes.append(
-            "Units restored but not enabled by drkit: "
-            + ", ".join(units)
-            + " (`systemctl enable --now <unit>` for those that should run)"
-        )
+    if host.backed_up_inventory().get("enabled_units") is None:
+        # A backup taken before drkit recorded enabled units: the operator decides.
+        units = _restored_units(host.manifest.system.paths)
+        if units:
+            host.notes.append(
+                "Units restored but not enabled by drkit (this backup does not say which were "
+                f"enabled): {', '.join(units)} (`systemctl enable --now <unit>` for those that "
+                "should run)"
+            )
     tls_config = host.manifest.system.tls
     if tls_config is not None:
         host.notes.append("TLS: check that renewal works (`certbot renew --dry-run`)")
@@ -530,11 +556,17 @@ def _addresses() -> list[str]:
     return result.stdout.split()[:3] if result.ok else []
 
 
+def _units_to_enable(host: HostRestore) -> list[str]:
+    """Restored units that were enabled on the old server."""
+    enabled = set(host.backed_up_inventory().get("enabled_units") or [])
+    return [unit for unit in _restored_units(host.manifest.system.paths) if unit in enabled]
+
+
 def _inventory_diff(host: HostRestore) -> dict[str, Any]:
     """Packages installed by hand on the old server versus here; noted for the operator."""
-    if host.inventory is None or host.inventory.snapshot is None:
+    before = host.backed_up_inventory()
+    if not before:
         return {}
-    before = json.loads(host.restic.dump(host.inventory.snapshot, f"/{INVENTORY_FILENAME}"))
     now = collect_inventory()
     manual_before = set(before.get("manual_packages") or [])
     manual_now = set(now.get("manual_packages") or [])

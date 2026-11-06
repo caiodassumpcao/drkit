@@ -145,8 +145,12 @@ def deploy() -> None:
     SITE_LINK.symlink_to(SITE)
     sh("nginx", "-t")
     sh("systemctl", "reload-or-restart", "nginx")
-    UNIT.write_text("[Unit]\nDescription=drkit demo report\n[Service]\nType=oneshot\n"
-                    "ExecStart=/bin/true\n")  # fmt: skip
+    UNIT.write_text(
+        "[Unit]\nDescription=drkit demo report\n[Service]\nType=oneshot\n"
+        "ExecStart=/bin/true\nRemainAfterExit=yes\n[Install]\nWantedBy=multi-user.target\n"
+    )
+    sh("systemctl", "daemon-reload")
+    sh("systemctl", "enable", "--now", UNIT.name)
 
 
 def configure(repository: str) -> None:
@@ -222,6 +226,7 @@ def disaster() -> None:
     SITE.unlink()
     SITE_LINK.unlink()
     shutil.rmtree("/etc/letsencrypt")
+    sh("systemctl", "disable", "--now", UNIT.name)
     UNIT.unlink()
     sh("systemctl", "daemon-reload")
     sh("systemctl", "stop", "nginx")
@@ -266,7 +271,10 @@ def test_restore_host_rebuilds_projects_and_nginx(storage: str) -> None:
     assert "web" in (PROJECT / "services.txt").read_text().split()
     notes = "\n".join(report["notes"])
     assert "DNS: point demo.test to this server" in notes
-    assert "Units restored but not enabled by drkit: drkit-demo-report.service" in notes
+    assert "Units restored" not in notes
+    # Enabled on the old server, so enabled (and started) again on the new one.
+    assert sh("systemctl", "is-enabled", UNIT.name).strip() == "enabled"
+    assert sh("systemctl", "is-active", UNIT.name).strip() == "active"
 
 
 def _publish(report: dict[str, Any]) -> None:
