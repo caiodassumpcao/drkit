@@ -18,20 +18,27 @@ updates:
     commit-message:
       prefix: ci
 
+  # The newest database releases are tested here: every update is welcome.
   - package-ecosystem: docker-compose
     directories: [/tests/integration, /tests/integration/demo]
     schedule:
       interval: weekly
-    # The database majors under test are deliberate (one per supported line); moving to a
-    # new major is a decision for a pull request of its own, not a routine update.
+    commit-message:
+      prefix: test
+      include: scope
+
+  # The oldest supported releases (DESIGN §1.3): patch updates only, the floor stays put.
+  - package-ecosystem: docker-compose
+    directory: /tests/integration/oldest
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: test
+      include: scope
     ignore:
       - dependency-name: postgres
         update-types: ["version-update:semver-major"]
       - dependency-name: mysql
-        update-types: ["version-update:semver-major"]
-      # MariaDB minor versions are separate release lines (11.4 and 11.8 are both LTS).
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: mariadb
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
-    commit-message:
-      prefix: test
-      include: scope

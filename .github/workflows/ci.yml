@@ -44,9 +44,15 @@ jobs:
         run: uv build
 
   integration:
-    name: Integration tests
+    name: Integration tests (${{ matrix.versions }} databases)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The newest release of each engine, and the oldest supported one (DESIGN §1.3).
+        versions: [latest, oldest]
     env:
+      DRKIT_IT_VERSIONS: ${{ matrix.versions }}
       RESTIC_VERSION: 0.18.1
       RESTIC_SHA256: 680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d
     steps:
@@ -64,11 +70,16 @@ jobs:
           sudo install -m 0755 restic /usr/local/bin/restic
           restic version
       - name: Pull service images
-        run: docker compose -f tests/integration/compose.yaml pull --quiet
+        run: |
+          files=(-f tests/integration/compose.yaml)
+          [ "$DRKIT_IT_VERSIONS" = oldest ] && files+=(-f tests/integration/oldest/compose.yaml)
+          docker compose "${files[@]}" pull --quiet
       - run: uv sync --locked
       - name: Run integration tests as root
         # As in production: volume data under /var/lib/docker is only readable by root.
-        run: sudo --preserve-env=PATH .venv/bin/python -m pytest -m integration --no-cov -rs
+        run: >-
+          sudo --preserve-env=PATH,DRKIT_IT_VERSIONS
+          .venv/bin/python -m pytest -m integration --no-cov -rs
 
   host:
     name: Host recovery

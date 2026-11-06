@@ -27,18 +27,28 @@ from drkit.orchestrator import restic_for
 from drkit.restic import Restic
 
 COMPOSE_FILE = Path(__file__).with_name("compose.yaml")
+# DRKIT_IT_VERSIONS=oldest runs the stack with the oldest supported database releases.
+OLDEST_FILE = Path(__file__).with_name("oldest") / "compose.yaml"
+COMPOSE_FILES = (
+    [COMPOSE_FILE, OLDEST_FILE]
+    if os.environ.get("DRKIT_IT_VERSIONS") == "oldest"
+    else [COMPOSE_FILE]
+)
 MINIO_USER = "drkit-test"
 MINIO_PASSWORD = "drkit-test-only"  # matches compose.yaml
 HOST = "it-host"
 BUCKET = "drkit-it"
 
 
-def image_version(service: str, compose_file: Path = COMPOSE_FILE) -> str:
+def image_version(service: str) -> str:
     """Tag of the image a compose service runs (``mysql:8.4.9@sha256:…`` → ``8.4.9``).
 
     Tests derive expected server versions from it, so image updates need no test changes.
     """
-    image: str = yaml.safe_load(compose_file.read_text())["services"][service]["image"]
+    image = ""
+    for compose_file in COMPOSE_FILES:  # later files override earlier ones
+        services = yaml.safe_load(compose_file.read_text())["services"]
+        image = services.get(service, {}).get("image", image)
     return image.split("@", 1)[0].rsplit(":", 1)[1]
 
 
@@ -54,7 +64,7 @@ class Stack:
 
     def compose(self, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["docker", "compose", "-f", str(COMPOSE_FILE), "-p", self.project, *args],
+            ["docker", "compose", *_file_args(), "-p", self.project, *args],
             check=True,
             capture_output=True,
             text=True,
@@ -69,6 +79,10 @@ class Stack:
             "mariadb": ["mariadb", "-uapp", f"-p{MINIO_PASSWORD}", "blog", "-N", "-e", statement],
         }
         return self.compose("exec", "-T", service, *clients[service]).stdout
+
+
+def _file_args() -> list[str]:
+    return [arg for path in COMPOSE_FILES for arg in ("-f", str(path))]
 
 
 @pytest.fixture(scope="session")

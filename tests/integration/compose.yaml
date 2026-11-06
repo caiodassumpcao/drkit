@@ -1,5 +1,7 @@
 # Throwaway services for integration tests. Credentials below are test-only fixtures.
 # Images are pinned by digest (tag kept for readability); Dependabot proposes updates.
+# The databases are the newest release of each engine; oldest/compose.yaml overrides them with
+# the oldest supported ones (DESIGN §1.3), and CI runs the integration tests against both.
 services:
   minio:
     # The upstream minio/minio image is no longer published; pgsty/minio is a maintained
@@ -12,7 +14,7 @@ services:
     ports: ["127.0.0.1::9000"]
 
   db:
-    image: postgres:16.14@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+    image: postgres:18.6@sha256:bd5dfa494a5a259704365813dbfa5fa6b3e69be7348d43b547f540c730478583
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: drkit-test-only
@@ -23,7 +25,7 @@ services:
       retries: 60
 
   mysql:
-    image: mysql:8.4.11@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364
+    image: mysql:26.10.0@sha256:3819b2b23835c4a73c8b022fafc33c8095c0f81c929a8b7a84613d2fba6c52f5
     environment:
       MYSQL_ROOT_PASSWORD: drkit-test-only
       MYSQL_DATABASE: legacy
@@ -36,7 +38,7 @@ services:
       retries: 90
 
   mariadb:
-    image: mariadb:11.4.13@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
+    image: mariadb:13.0.2@sha256:f4054da26e3a9dd6c8b5cc97363e544408b15c0fb369d7359c25dc04826eb6e1
     environment:
       MARIADB_ROOT_PASSWORD: drkit-test-only
       MARIADB_DATABASE: blog
