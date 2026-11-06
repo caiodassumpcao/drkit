@@ -48,6 +48,16 @@ class VerifyRecord(BaseModel):
     finished_at: datetime
 
 
+class DrillRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    drill_id: str
+    status: Literal["ok", "failed"]
+    finished_at: datetime
+    rto_s: float | None = None
+    rpo_s: float | None = None
+
+
 class State(BaseModel):
     # Unknown keys are dropped rather than rejected: a newer drkit may have written them.
     model_config = ConfigDict(extra="ignore")
@@ -55,6 +65,7 @@ class State(BaseModel):
     last_run: RunRecord | None = None
     last_success: RunRecord | None = None
     last_verify: VerifyRecord | None = None
+    last_drill: DrillRecord | None = None
 
 
 def state_dir() -> Path:
@@ -112,5 +123,11 @@ def record_verify(
 ) -> State:
     record = VerifyRecord(run_id=run_id, status=status, finished_at=datetime.now(UTC))
     updated = load(directory).model_copy(update={"last_verify": record})
+    save(updated, directory)
+    return updated
+
+
+def record_drill(record: DrillRecord, directory: Path | None = None) -> State:
+    updated = load(directory).model_copy(update={"last_drill": record})
     save(updated, directory)
     return updated

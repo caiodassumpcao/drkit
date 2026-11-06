@@ -34,6 +34,7 @@ class StatusReport:
     last_success_run: str | None
     last_success_at: datetime | None
     last_verify: state.VerifyRecord | None
+    last_drill: state.DrillRecord | None = None
 
     @property
     def rpo_s(self) -> float | None:
@@ -46,7 +47,7 @@ class StatusReport:
         data = asdict(self)
         data["rpo_s"] = self.rpo_s
         data["last_verify"] = self.last_verify.model_dump(mode="json") if self.last_verify else None
-        data["last_drill"] = None  # recorded from v1.0 (drkit drill)
+        data["last_drill"] = self.last_drill.model_dump(mode="json") if self.last_drill else None
         return data
 
 
@@ -75,13 +76,15 @@ def build_report(
         )
     # The meta snapshot is the last write of a run: its time is when the run became restorable.
     last_ok = next((s for s in reversed(summaries) if s.status == "ok"), None)
+    local = state.load(state_directory)
     return StatusReport(
         host=restic.host,
         generated_at=now or datetime.now(UTC),
         runs=lines,
         last_success_run=last_ok.run_id if last_ok else None,
         last_success_at=last_ok.time if last_ok else None,
-        last_verify=state.load(state_directory).last_verify,
+        last_verify=local.last_verify,
+        last_drill=local.last_drill,
     )
 
 
@@ -97,6 +100,13 @@ def to_markdown(report: StatusReport) -> str:
         if report.last_verify
         else "never"
     )
+    last = report.last_drill
+    drill = (
+        f"{last.status} · RTO {human_duration(last.rto_s or 0)}, "
+        f"RPO {human_duration(last.rpo_s or 0)} · {_utc(last.finished_at)}"
+        if last
+        else "never"
+    )
     lines = [
         f"# drkit report: {report.host}",
         "",
@@ -106,7 +116,7 @@ def to_markdown(report: StatusReport) -> str:
         "|---|---|",
         f"| Current RPO | {rpo} |",
         f"| Last verify | {verify} |",
-        "| Last drill | never |",
+        f"| Last drill | {drill} |",
         "",
         f"## Last {len(report.runs)} run(s)",
         "",

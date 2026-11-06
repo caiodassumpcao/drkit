@@ -43,8 +43,17 @@ def test_record_runs_tracks_last_success(tmp_path: Path) -> None:
 
 
 def test_unknown_keys_are_ignored(tmp_path: Path) -> None:
-    (tmp_path / "state.json").write_text(json.dumps({"last_drill": {"rto_s": 300}}))
+    (tmp_path / "state.json").write_text(json.dumps({"last_restore": {"rto_s": 300}}))
     assert state.load(tmp_path) == state.State()
+
+
+def test_record_drill(tmp_path: Path) -> None:
+    record = state.DrillRecord(
+        drill_id="d1", status="ok", finished_at=datetime(2026, 11, 6, tzinfo=UTC), rto_s=95.2,
+        rpo_s=12.0,
+    )  # fmt: skip
+    assert state.record_drill(record, tmp_path).last_drill == record
+    assert state.load(tmp_path).last_drill == record
 
 
 @pytest.mark.parametrize("content", ["{not json", '{"last_run": {"run_id": 1}}'])
