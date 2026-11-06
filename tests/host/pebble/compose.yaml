@@ -1,0 +1,28 @@
+# A local ACME server for the TLS reissue path of `restore host`: Pebble issues certificates
+# and pebble-challtestsrv answers its DNS queries, so no public DNS is involved. Host
+# networking: Pebble validates HTTP-01 challenges on port 80 of this machine, where certbot's
+# standalone server listens. Images are pinned by digest; Dependabot proposes updates.
+services:
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199
+    command: ["-config", "/config/pebble-config.json", "-dnsserver", "127.0.0.1:8053"]
+    network_mode: host
+    environment:
+      PEBBLE_VA_NOSLEEP: "1"  # validate at once
+      PEBBLE_WFE_NONCEREJECT: "0"  # no random nonce rejections: deterministic runs
+    volumes:
+      - ./pebble-config.json:/config/pebble-config.json:ro
+
+  challtestsrv:
+    image: ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1@sha256:12ce21884def456bcf9786542113949e1f19dc7738d2c70e156c2d0c38a1405b
+    # Every name resolves to this machine; only the DNS server is needed.
+    command:
+      - -defaultIPv4=127.0.0.1
+      - -defaultIPv6=
+      - -dnsserver=127.0.0.1:8053
+      - -management=127.0.0.1:8055
+      - -http01=
+      - -https01=
+      - -tlsalpn01=
+      - -doh=
+    network_mode: host

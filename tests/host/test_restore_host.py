@@ -11,6 +11,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ pytestmark = [
 ]
 
 DEMO = Path(__file__).parents[1] / "integration" / "demo"
+PEBBLE = Path(__file__).with_name("pebble")
 PROJECT = Path("/srv/demo")
 REMOTE = Path("/srv/git/demo.git")
 ETC = Path("/etc/drkit")
@@ -87,10 +89,47 @@ def fixtures() -> dict[str, Any]:
         "rows": sql("SELECT count(*), md5(string_agg(payload, ',' ORDER BY id)) FROM items"),
         "uploads": sorted(uploads.splitlines()),
         "site": SITE.read_text(),
-        "certificate": (LIVE / "fullchain.pem").read_bytes(),
         "unit": UNIT.read_text(),
         "secret": (PROJECT / ".env").read_text(),
     }
+
+
+@pytest.fixture(scope="module")
+def acme(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """A local ACME server (Pebble) that certbot uses instead of Let's Encrypt.
+
+    certbot reads ``server`` from ``/etc/letsencrypt/cli.ini`` (written again after the
+    disaster, as part of the new server's setup) and trusts Pebble's CA through
+    ``REQUESTS_CA_BUNDLE``: neither drkit nor the manifest know about it.
+    """
+    project = ["docker", "compose", "-f", str(PEBBLE / "compose.yaml"), "-p", "drkit-acme"]
+    sh(*project, "up", "--detach")
+    try:
+        _wait_for("https://127.0.0.1:14000/dir")
+        ca = tmp_path_factory.mktemp("pebble") / "pebble.minica.pem"
+        container = sh(*project, "ps", "--quiet", "pebble").strip()
+        sh("docker", "cp", f"{container}:/test/certs/pebble.minica.pem", str(ca))
+        point_certbot_at_pebble()
+        os.environ["REQUESTS_CA_BUNDLE"] = str(ca)
+        yield
+    finally:
+        subprocess.run([*project, "down"], check=False, capture_output=True)
+
+
+def point_certbot_at_pebble() -> None:
+    cli_ini = Path("/etc/letsencrypt/cli.ini")
+    cli_ini.parent.mkdir(parents=True, exist_ok=True)
+    cli_ini.write_text("server = https://localhost:14000/dir\n")
+
+
+def _wait_for(url: str) -> None:
+    for _ in range(60):
+        try:
+            httpx.get(url, verify=False, timeout=2)  # noqa: S501 - Pebble's own test CA
+            return
+        except httpx.HTTPError:
+            time.sleep(1)
+    raise TimeoutError(f"{url} did not answer")
 
 
 @pytest.fixture(scope="module")
@@ -181,14 +220,14 @@ def configure(repository: str) -> None:
             },
             "paths": [
                 {"path": "/etc/nginx", "restore": True},
-                {"path": "/etc/letsencrypt"},
                 {
                     "path": "/etc/systemd/system",
                     "include": ["drkit-demo-*.service"],
                     "restore": True,
                 },
             ],
-            "tls": {"strategy": "restore"},
+            # Issued again by Pebble during the restore (certbot --standalone).
+            "tls": {"strategy": "reissue", "email": "ops@example.com"},
         },
         "projects": [
             {
@@ -226,12 +265,14 @@ def disaster() -> None:
     SITE.unlink()
     SITE_LINK.unlink()
     shutil.rmtree("/etc/letsencrypt")
+    point_certbot_at_pebble()  # the new server's certbot setup, not part of the backup
     sh("systemctl", "disable", "--now", UNIT.name)
     UNIT.unlink()
     sh("systemctl", "daemon-reload")
     sh("systemctl", "stop", "nginx")
 
 
+@pytest.mark.usefixtures("acme")
 def test_restore_host_rebuilds_projects_and_nginx(storage: str) -> None:
     assert shutil.which("drkit") == "/usr/local/bin/drkit", "drkit comes from bootstrap.sh"
     deploy()
@@ -267,6 +308,10 @@ def test_restore_host_rebuilds_projects_and_nginx(storage: str) -> None:
     assert httpx.get("http://127.0.0.1/www/health", timeout=10).text == "ok\n"
     assert httpx.get("https://127.0.0.1/www/health", timeout=10, verify=False).text == "ok\n"  # noqa: S501
     assert (PROJECT / ".env").stat().st_mode & 0o777 == 0o600
+    # A new certificate, issued for the domain nginx serves by the ACME server.
+    assert report["steps"][5]["detail"] == "1 certificate(s) issued: demo.test (demo.test)"
+    issuer = sh("openssl", "x509", "-noout", "-issuer", "-in", str(LIVE / "fullchain.pem"))
+    assert "Pebble" in issuer
     assert (PROJECT / "restored-by-hook").read_text() == "demo demo\n"
     assert "web" in (PROJECT / "services.txt").read_text().split()
     notes = "\n".join(report["notes"])

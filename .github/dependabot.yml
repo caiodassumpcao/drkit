@@ -20,7 +20,7 @@ updates:
 
   # The newest database releases are tested here: every update is welcome.
   - package-ecosystem: docker-compose
-    directories: [/tests/integration, /tests/integration/demo]
+    directories: [/tests/integration, /tests/integration/demo, /tests/host/pebble]
     schedule:
       interval: weekly
     commit-message:
