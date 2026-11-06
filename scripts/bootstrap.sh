@@ -14,7 +14,7 @@ set -euo pipefail
 
 readonly DRKIT_VERSION="0.4.0"
 readonly DRKIT_SPEC="${DRKIT_SPEC:-git+https://github.com/caiodassumpcao/drkit.git@v${DRKIT_VERSION}}"
-readonly RESTIC_VERSION="0.18.1"
+readonly RESTIC_VERSION="0.19.1"
 readonly UV_VERSION="0.13.6"
 readonly PYTHON_VERSION="3.12"
 readonly ANSIBLE_SPEC="ansible-core>=2.17,<2.22"
@@ -35,8 +35,8 @@ die() {
 # Checksums of the official release files (from each release's SHA256SUMS / .sha256 files).
 restic_sha256() {
   case "$1" in
-    amd64) echo "680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d" ;;
-    arm64) echo "87f53fddde38764095e9c058a3b31834052c37e5826d2acf34e18923c006bd45" ;;
+    amd64) echo "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c" ;;
+    arm64) echo "a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465" ;;
   esac
 }
 uv_sha256() {

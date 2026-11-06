@@ -45,4 +45,4 @@ body:
     id: os
     attributes:
       label: OS, restic and Docker versions
-      placeholder: Ubuntu 24.04, restic 0.18.1, Docker 29.0
+      placeholder: Ubuntu 24.04, restic 0.19.1, Docker 29.0

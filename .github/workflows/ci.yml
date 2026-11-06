@@ -53,8 +53,8 @@ jobs:
         versions: [latest, oldest]
     env:
       DRKIT_IT_VERSIONS: ${{ matrix.versions }}
-      RESTIC_VERSION: 0.18.1
-      RESTIC_SHA256: 680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d
+      RESTIC_VERSION: 0.19.1
+      RESTIC_SHA256: f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
