@@ -271,7 +271,8 @@ def check_dependency(dependency: Dependency, *, required: bool = True) -> Check:
         detail = runner.failure_detail(output, max_lines=1) or f"exit code {output.returncode}"
         return result(failure, detail, _daemon_hint(dependency) or dependency.install_hint)
 
-    match = dependency.version_pattern.search(output.stdout)
+    # Some tools (nginx -v) print their version on stderr.
+    match = dependency.version_pattern.search(output.stdout + output.stderr)
     if match is None:
         return result(failure, "could not determine version", dependency.install_hint)
     version = match.group(1)

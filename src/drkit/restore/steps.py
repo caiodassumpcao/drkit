@@ -30,7 +30,7 @@ from drkit.runmanifest import new_run_id
 REPORTS_DIR = "reports"
 
 StepStatus = Literal["ok", "failed", "skipped", "not_run"]
-RestoreKind = Literal["db", "project", "host"]
+RestoreKind = Literal["db", "project", "host", "drill"]
 
 log = structlog.get_logger(__name__)
 
@@ -235,12 +235,14 @@ def format_message(host: str, report: RestoreReport) -> str:
 
 
 def save_report(report: RestoreReport, directory: Path | None = None) -> Path:
-    """Write the report as JSON to ``<state dir>/reports/restore-<id>.json``.
+    """Write the report as JSON to ``<state dir>/reports/restore-<id>.json`` (``drill-<id>``
+    for drills).
 
     Sets ``report.report_path``, so the saved report names its own location.
     """
     target_dir = (directory or state.state_dir()) / REPORTS_DIR
-    path = target_dir / f"restore-{report.restore_id}.json"
+    prefix = "drill" if report.kind == "drill" else "restore"
+    path = target_dir / f"{prefix}-{report.restore_id}.json"
     report.report_path = path
     content = runner.redact(_to_json(report))
     try:

@@ -1,0 +1,23 @@
+# Off-site storage for `drkit drill`: an S3-compatible MinIO, which survives the disaster.
+# Credentials are drill-only fixtures. The image is pinned by digest.
+name: drkit-demo-storage
+
+services:
+  minio:
+    # The upstream minio/minio image is no longer published; pgsty/minio is a maintained
+    # community build of the same server.
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: drkit-drill
+      MINIO_ROOT_PASSWORD: drkit-drill-only
+    ports: ["127.0.0.1:19000:9000"]
+    volumes:
+      - minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      retries: 60
+
+volumes:
+  minio:

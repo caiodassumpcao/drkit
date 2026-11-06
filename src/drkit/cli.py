@@ -18,6 +18,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from drkit import __version__, doctor
+from drkit import drill as drill_module
 from drkit import logging as drkit_logging
 from drkit.config import (
     CONFIG_ENV_VAR,
@@ -27,7 +28,7 @@ from drkit.config import (
     load_config,
     resolve_config_path,
 )
-from drkit.errors import DrkitError, RestoreAbortedError
+from drkit.errors import ConfigError, DrkitError, ExitCode, RestoreAbortedError
 from drkit.orchestrator import SUPPORTED_KINDS, restic_for, run_backup, run_prune
 from drkit.report import DEFAULT_LIMIT as DEFAULT_REPORT_LIMIT
 from drkit.report import build_report, human_bytes, to_markdown
@@ -577,6 +578,42 @@ def _render_step(result: restore_steps.StepResult, indent: str = "") -> None:
     console.print(line, highlight=False)
     for substep in result.substeps:
         _render_step(substep, indent + "    ")
+
+
+@app.command("drill")
+@handle_errors
+def drill_command(
+    ctx: typer.Context,
+    local: Annotated[
+        bool, typer.Option("--local", help="Run the drill on this machine (disposable host).")
+    ] = False,
+) -> None:
+    """Deploy a demo application, back it up, destroy it and restore it; measure RPO and RTO."""
+    options: Options = ctx.obj
+    if not local:
+        raise ConfigError(
+            "drkit drill runs on the machine it is started on: pass --local",
+            hint="run it as root on a disposable host (it deletes the demo application's "
+            "containers, volumes and images)",
+        )
+    report = drill_module.run(on_step=None if options.json else _render_step)
+    if options.json:
+        _echo_json(report.to_dict())
+    else:
+        facts = report.facts
+        status = "[green]passed[/green]" if report.ok else "[red]FAILED[/red]"
+        console.print(f"\nDrill {status} in {report.duration_s:.1f}s.")
+        console.print(
+            f"RTO {facts.get('rto_s', '?')}s · RPO {facts.get('rpo_s', '?')}s · "
+            f"data {facts.get('integrity', 'not checked')}"
+        )
+        if report.report_path:
+            console.print(
+                f"Report: {escape(str(report.report_path))}", highlight=False, soft_wrap=True
+            )
+        for error in report.errors:
+            err_console.print(f"[yellow]warning:[/yellow] {escape(redact(error))}")
+    raise typer.Exit(int(ExitCode.OK if report.ok else ExitCode.PARTIAL_FAILURE))
 
 
 runs_app = typer.Typer(help="Inspect backup runs.", no_args_is_help=True)

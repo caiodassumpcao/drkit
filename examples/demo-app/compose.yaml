@@ -1,0 +1,55 @@
+# Demo application for `drkit drill`: PostgreSQL, MySQL and a small HTTP app that stores
+# uploads in a named volume, served behind the host's nginx (nginx/drkit-demo.conf).
+# Settings come from .env, which drkit backs up as a secret. Images are pinned by digest.
+name: drkit-demo
+
+services:
+  db:
+    image: postgres:18.6@sha256:bd5dfa494a5a259704365813dbfa5fa6b3e69be7348d43b547f540c730478583
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: shop
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      # TCP on purpose: the entrypoint's temporary init server only listens on the socket.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U shop -d shop"]
+      interval: 2s
+      retries: 60
+
+  mysql:
+    image: mysql:8.4.13@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: analytics
+      MYSQL_USER: analytics
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u analytics -p\"$$MYSQL_PASSWORD\" --silent"]
+      interval: 2s
+      retries: 90
+
+  app:
+    image: python:3.13.12-alpine3.22@sha256:41351b07080ccfaa27bf38dde20de79ee6a0ac74a58c00c6d7a7d96ac4e69716
+    command: ["python", "/app/app.py"]
+    environment:
+      UPLOADS_DIR: /data/uploads
+    ports: ["127.0.0.1:${APP_PORT}:8000"]
+    volumes:
+      - ./app:/app:ro
+      - uploads:/data/uploads
+    depends_on:
+      db: {condition: service_healthy}
+      mysql: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 2s
+      retries: 30
+
+volumes:
+  pgdata:
+  mysqldata:
+  uploads:

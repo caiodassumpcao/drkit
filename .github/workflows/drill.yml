@@ -1,0 +1,42 @@
+name: DR drill
+
+# A full disaster-recovery drill on a disposable runner (DESIGN §8): deploy the demo
+# application, back it up, destroy it and restore it with `drkit restore host`, then check
+# that every row and file is identical. RPO, RTO and per-step timings go to the job summary
+# and drill-report.json.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1" # Mondays: catches breakage from new images and runner updates
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drill-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drill:
+    name: DR drill
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Bootstrap the host
+        run: sudo DRKIT_SPEC="$PWD" bash scripts/bootstrap.sh
+      - name: Install nginx
+        run: sudo apt-get install -y -qq nginx
+      - name: Run the drill
+        run: >-
+          sudo --preserve-env=GITHUB_STEP_SUMMARY,ImageOS,ImageVersion
+          drkit --json drill --local > drill-report.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: drill-report
+          path: drill-report.json
+          retention-days: 90
