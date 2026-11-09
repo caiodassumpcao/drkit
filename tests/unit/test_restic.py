@@ -192,6 +192,17 @@ class TestBackup:
         assert fake.argv[0][-5:] == ["--exclude", "*.log", "--", "/etc/nginx", "-weird"]
         assert fake.calls[0]["timeout"] == restic_module.BACKUP_TIMEOUT_S
 
+    def test_data_added_counts_kept_snapshots_only(self, repo: Restic, fake: FakeRun) -> None:
+        unreadable = json.dumps(
+            {"message_type": "summary", "snapshot_id": "bad1", "data_added": 1000}
+        )
+        fake.responses = [(0, SUMMARY, ""), (0, SUMMARY, ""), (3, unreadable, "")]
+        repo.backup_bytes("x", "f", [])
+        repo.backup_paths(["/etc"], [])
+        with pytest.raises(CommandError):
+            repo.backup_paths(["/srv"], [])  # incomplete: its snapshot is forgotten
+        assert repo.data_added == 14
+
     def test_backup_failure(self, repo: Restic, fake: FakeRun) -> None:
         fake.responses = [(1, "", "Fatal: no space left")]
         with pytest.raises(CommandError, match="restic backup failed with exit code 1"):

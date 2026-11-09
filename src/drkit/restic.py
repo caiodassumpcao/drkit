@@ -76,6 +76,8 @@ class Restic:
     def __init__(self, repository: Repository, *, host: str, env: Mapping[str, str]) -> None:
         self.url = repository.url
         self.host = host
+        self.data_added = 0
+        """New data stored by this object's successful backups (after deduplication)."""
         self.probe_timeout_s = PROBE_TIMEOUT_S
         self.env: dict[str, str] = {
             **env,
@@ -143,7 +145,9 @@ class Restic:
         result = self._run(
             self.backup_stdin_command(filename, tags)[1:], input=data, timeout=COMMAND_TIMEOUT_S
         )
-        return parse_backup_summary(result.stdout)
+        summary = parse_backup_summary(result.stdout)
+        self.data_added += summary.data_added
+        return summary
 
     def backup_paths(
         self, paths: Sequence[str], tags: Sequence[str], *, excludes: Sequence[str] = ()
@@ -163,6 +167,7 @@ class Restic:
         except CommandError:
             summary = None
         if result.ok and summary is not None:
+            self.data_added += summary.data_added
             return summary
         if summary is not None:
             self.forget([summary.snapshot_id])

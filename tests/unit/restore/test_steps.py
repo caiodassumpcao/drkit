@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from drkit import lock, runner
+from drkit import lock, runner, state
 from drkit.config import Notifications
 from drkit.errors import ConfigError, DrkitError, LockHeldError
 from drkit.restore import steps
@@ -223,3 +223,28 @@ def test_nested_pipelines_are_reported() -> None:
     assert "RTO 12s (restore start → all healthchecks green)" in steps.format_message(
         "prod-01", report
     )
+
+
+class TestRecordedRestores:
+    def test_outcome_and_rto_go_to_the_state(self, tmp_path: Path) -> None:
+        ok_plan, _ = plan("done")
+        steps.run(ok_plan, lock_path=tmp_path / "lock", state_directory=tmp_path)
+        record = state.load(tmp_path).last_restores["project"]
+        assert (record.restore_id, record.status) == ("r1", "ok")
+        assert record.rto_s is not None
+
+        failing, _ = plan(DrkitError("boom"))
+        steps.run(failing, lock_path=tmp_path / "lock", state_directory=tmp_path)
+        record = state.load(tmp_path).last_restores["project"]
+        assert (record.status, record.rto_s) == ("failed", None)
+
+    def test_host_restores_record_their_measured_rto(self, tmp_path: Path) -> None:
+        host_plan = RestorePlan("host", "prod-01", "r", [Step("x", lambda: "ok")], restore_id="h1")
+        host_plan.facts["rto_s"] = 268.4
+        steps.run(host_plan, lock_path=tmp_path / "lock", state_directory=tmp_path)
+        assert state.load(tmp_path).last_restores["host"].rto_s == 268.4
+
+    def test_not_recorded_on_request(self, tmp_path: Path) -> None:
+        ok_plan, _ = plan("done")
+        steps.run(ok_plan, lock_path=tmp_path / "lock", state_directory=tmp_path, record=False)
+        assert state.load(tmp_path).last_restores == {}

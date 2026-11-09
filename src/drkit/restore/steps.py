@@ -193,6 +193,7 @@ def run(
     notifications: Notifications | None = None,
     host: str = "",
     http_client: httpx.Client | None = None,
+    record: bool = True,
 ) -> RestoreReport:
     """Execute ``plan`` under the run lock, save its report and announce the outcome.
 
@@ -206,6 +207,11 @@ def run(
         save_report(report, state_directory)
     except ConfigError as exc:
         report.errors.append(f"report: {exc.message}")
+    if record and report.kind in ("db", "project", "host"):
+        try:
+            state.record_restore(report.kind, restore_record(report), state_directory)
+        except ConfigError as exc:
+            report.errors.append(f"state: {exc.message}")
     if notifications is not None:
         # A restore is rare and always news, good or bad: both outcomes are sent, whatever
         # `notifications.on` says for scheduled jobs.
@@ -217,6 +223,18 @@ def run(
             client=http_client,
         )
     return report
+
+
+def restore_record(report: RestoreReport) -> state.RestoreRecord:
+    """The ``state.json`` entry of a restore. Its RTO (host: start to the last green
+    healthcheck; db and project: duration) is only recorded for a successful restore."""
+    rto = report.facts.get("rto_s", report.duration_s) if report.ok else None
+    return state.RestoreRecord(
+        restore_id=report.restore_id,
+        status="ok" if report.ok else "failed",
+        finished_at=report.finished_at or datetime.now(UTC),
+        rto_s=rto,
+    )
 
 
 def format_message(host: str, report: RestoreReport) -> str:

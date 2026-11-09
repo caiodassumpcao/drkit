@@ -133,6 +133,7 @@ def run_backup(
     with lock.acquire(lock_path):
         started = datetime.now(UTC)
         run_id = new_run_id(started)
+        added_before = getattr(repo, "data_added", None)
         with structlog.contextvars.bound_contextvars(run_id=run_id):
             log.info("backup.start", host=manifest.host, project=project, kinds=kinds)
             try:
@@ -181,7 +182,14 @@ def run_backup(
             except DrkitError as exc:
                 report.errors.append(f"retention: {exc.message}")
             try:
-                state.record_run(run, state_directory)
+                added = getattr(repo, "data_added", None)
+                state.record_run(
+                    run,
+                    state_directory,
+                    bytes_added=added - added_before
+                    if added is not None and added_before is not None
+                    else None,
+                )
             except DrkitError as exc:
                 report.errors.append(f"state: {exc.message}")
 
@@ -208,6 +216,7 @@ def run_prune(
     lock_path: Path | None = None,
     now: datetime | None = None,
     http_client: httpx.Client | None = None,
+    state_directory: Path | None = None,
 ) -> PruneReport:
     """Forget the snapshots of runs that never finished, then reclaim unreferenced data.
 
@@ -225,6 +234,7 @@ def run_prune(
             forgotten = repo.forget(snapshot.id for snapshot in orphans)
             repo.prune()
         except DrkitError as exc:
+            _record_prune("failed", state_directory)
             notify(
                 manifest.notifications,
                 "failure",
@@ -232,12 +242,20 @@ def run_prune(
                 client=http_client,
             )
             raise
+    _record_prune("ok", state_directory)
     report = PruneReport(
         orphan_runs=sorted({run for s in orphans if (run := s.tag_value("run"))}),
         forgotten_snapshots=forgotten,
     )
     log.info("prune.finish", orphan_runs=len(report.orphan_runs), forgotten=forgotten)
     return report
+
+
+def _record_prune(status: Literal["ok", "failed"], directory: Path | None) -> None:
+    try:
+        state.record_prune(status, directory)
+    except DrkitError as exc:
+        log.warning("prune.state_not_recorded", error=exc.message)
 
 
 def apply_retention(restic: Restic, retention: Retention, *, protect: str) -> RetentionResult:

@@ -111,6 +111,7 @@ def stream_dump(
         summary = None
 
     if result.ok and summary is not None:
+        ctx.restic.data_added += summary.data_added
         return summary
 
     if summary is not None:

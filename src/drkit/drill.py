@@ -317,7 +317,8 @@ def restore(drill: Drill) -> Outcome:
     loaded = drill.loaded()
     restic = restic_for(loaded.manifest, dict(loaded.env))
     host_plan = host_restore.plan(loaded, restic, skip_system=True)
-    report = restore_steps.run(host_plan)
+    # The drill's restore is not an operator's restore: it stays out of last_restores.
+    report = restore_steps.run(host_plan, record=False)
     if not report.ok:
         failed = report.failed_step
         raise NestedStepError(

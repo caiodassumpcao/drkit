@@ -612,6 +612,7 @@ class TestPrune:
             lock_path=tmp_path / "drkit.lock",
             now=T0,
             http_client=httpx.Client(transport=httpx.MockTransport(webhook)),
+            state_directory=tmp_path / "state",
         )
 
     def test_forgets_old_orphans_then_prunes(self, tmp_path: Path, webhook: Webhook) -> None:
@@ -620,6 +621,9 @@ class TestPrune:
         report = self.prune(tmp_path, restic, webhook)
 
         assert report == PruneReport(orphan_runs=["crashed"], forgotten_snapshots=2)
+        last = state.load(tmp_path / "state").last_prune
+        assert last is not None
+        assert last.status == "ok"
         remaining = sorted(str(s.tag_value("run")) for s, _ in restic.store.values())
         assert remaining == ["None", "done", "done", "running"]
         assert restic.pruned
@@ -638,6 +642,16 @@ class TestPrune:
         with pytest.raises(ConfigError, match="repository is locked"):
             self.prune(tmp_path, restic, webhook)
         assert webhook.messages == ["drkit prune on prod-01: FAILED\nrepository is locked"]
+        last = state.load(tmp_path / "state").last_prune
+        assert last is not None
+        assert last.status == "failed"
+
+    def test_unwritable_state_does_not_fail_the_prune(
+        self, tmp_path: Path, webhook: Webhook
+    ) -> None:
+        (tmp_path / "state").write_text("not a directory")
+        report = self.prune(tmp_path, self.restic(), webhook)
+        assert report.forgotten_snapshots == 2
 
     def test_holds_the_run_lock(self, tmp_path: Path, webhook: Webhook) -> None:
         restic = self.restic()

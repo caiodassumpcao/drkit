@@ -89,3 +89,71 @@ def test_record_verify_keeps_the_run_records(tmp_path: Path) -> None:
     assert current.last_success is not None
     reloaded = state.record_run(manifest("r2", "ok"), tmp_path)
     assert reloaded.last_verify == current.last_verify
+
+
+def run_with_items(run_id: str, items: list[tuple[str, str]]) -> RunManifest:
+    return RunManifest.model_validate(
+        {
+            "run_id": run_id,
+            "host": "h",
+            "drkit_version": "1.1.0",
+            "started_at": T0,
+            "finished_at": T0,
+            "status": "partial" if any(s == "failed" for _, s in items) else "ok",
+            "items": [
+                {"kind": "db", "project": project, "name": f"db{i}", "status": status}
+                for i, (project, status) in enumerate(items)
+            ],
+        }
+    )
+
+
+def test_record_run_counts_items_and_project_successes(tmp_path: Path) -> None:
+    state.record_run(run_with_items("r1", [("shop", "ok"), ("blog", "ok")]), tmp_path)
+    current = state.record_run(
+        run_with_items("r2", [("shop", "ok"), ("blog", "failed"), ("blog", "ok")]),
+        tmp_path,
+        bytes_added=4096,
+    )
+    assert current.last_run is not None
+    assert (current.last_run.items_ok, current.last_run.items_failed) == (2, 1)
+    assert current.last_run.bytes_added == 4096
+    # blog failed in r2: its last success is still r1.
+    assert {name: record.run_id for name, record in current.projects.items()} == {
+        "shop": "r2",
+        "blog": "r1",
+    }
+
+
+def test_record_prune_and_restores(tmp_path: Path) -> None:
+    state.record_prune("failed", tmp_path)
+    restore = state.RestoreRecord(restore_id="x1", status="ok", finished_at=T0, rto_s=42.5)
+    state.record_restore("project", restore, tmp_path)
+    current = state.record_restore(
+        "db", restore.model_copy(update={"status": "failed", "rto_s": None}), tmp_path
+    )
+    assert current.last_prune is not None
+    assert current.last_prune.status == "failed"
+    assert current.last_restores["project"] == restore
+    assert current.last_restores["db"].status == "failed"
+
+
+def test_state_files_of_1_0_still_load(tmp_path: Path) -> None:
+    (tmp_path / "state.json").write_text(
+        json.dumps(
+            {
+                "last_run": {
+                    "run_id": "r1",
+                    "status": "ok",
+                    "started_at": "2026-11-01T03:00:00Z",
+                    "finished_at": "2026-11-01T03:01:00Z",
+                },
+                "last_verify": None,
+            }
+        )
+    )
+    current = state.load(tmp_path)
+    assert current.last_run is not None
+    assert current.last_run.items_ok is None
+    assert current.projects == {}
+    assert current.last_restores == {}
