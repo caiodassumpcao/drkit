@@ -281,6 +281,17 @@ class Notifications(_Model):
         return self
 
 
+def _prom_file(value: Path) -> Path:
+    if value.suffix != ".prom":
+        raise ValueError("must end in .prom (node_exporter's textfile collector reads *.prom)")
+    return value
+
+
+class Metrics(_Model):
+    textfile: Annotated[AbsolutePath, AfterValidator(_prom_file)]
+    """Prometheus metrics file, rewritten after every command that changes them."""
+
+
 class Manifest(_Model):
     version: Literal[1]
     host: Name
@@ -289,6 +300,7 @@ class Manifest(_Model):
     system: System = Field(default_factory=System)
     projects: list[Project] = Field(default_factory=list)
     notifications: Notifications | None = None
+    metrics: Metrics | None = None
 
     @model_validator(mode="after")
     def _unique_projects(self) -> Self:

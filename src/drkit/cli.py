@@ -20,6 +20,7 @@ from rich.table import Table
 from drkit import __version__, doctor
 from drkit import drill as drill_module
 from drkit import logging as drkit_logging
+from drkit import metrics as metrics_module
 from drkit.config import (
     CONFIG_ENV_VAR,
     DEFAULT_CONFIG_PATH,
@@ -327,6 +328,33 @@ def prune_command(ctx: typer.Context) -> None:
             f"{len(report.orphan_runs)} incomplete run(s): {', '.join(report.orphan_runs)}"
         )
     console.print("[green]Repository pruned.[/green]")
+
+
+@app.command("metrics")
+@handle_errors
+def metrics_command(
+    ctx: typer.Context,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output", "-o", help="Write to this file (atomically) instead of standard output."
+        ),
+    ] = None,
+) -> None:
+    """Prometheus metrics (text format) from the local state; the repository is not opened."""
+    options: Options = ctx.obj
+    loaded = _load(options)
+    content = metrics_module.generate(loaded.manifest.host)
+    if output is None:
+        typer.echo(content, nl=False)
+        return
+    try:
+        metrics_module.write(output, content)
+    except OSError as exc:
+        raise ConfigError(
+            f"cannot write metrics to {output}: {exc.strerror or exc}",
+            hint="check that the directory exists and is writable",
+        ) from None
 
 
 class ReportFormat(StrEnum):
