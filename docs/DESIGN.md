@@ -452,7 +452,7 @@ Report (`$DRKIT_STATE_DIR/reports/drill-<id>.json`, `--json`, and `$GITHUB_STEP_
 
 ## 13. CI/CD (GitHub Actions)
 
-- `ci.yml` (push/PR): ruff, mypy, shellcheck, unit tests + coverage, build sdist + wheel, integration tests against the oldest and the newest database releases, host recovery (§12), Docker image build + smoke test + Trivy (fails on any HIGH/CRITICAL finding with a fix available), pip-audit on the locked runtime dependencies, Gitleaks.
+- `ci.yml` (push/PR): ruff, mypy, shellcheck, unit tests + coverage, build sdist + wheel, integration tests against the oldest and the newest database releases, host recovery (§12), Docker image build + smoke test + Trivy (fails on any HIGH/CRITICAL finding with a fix available; an accepted finding goes to `.trivyignore.yaml` with its reason and an expiry date), pip-audit on the locked runtime dependencies, Gitleaks.
 - `drill.yml` (push to `main`, pull requests, weekly cron, manual): DR drill (§8), job summary + `drill-report.json` artifact; status badge in README.
 - `release.yml` (signed tag `v*`, pushed once CI and the drill are green): checks the tag matches the package version, builds sdist + wheel, attests their build provenance (`actions/attest-build-provenance`), publishes the GitHub Release with both and the notes of that version from `CHANGELOG.md`.
 - `Dockerfile`: drkit with the Docker CLI, Compose, git and restic, on pinned bases. restic is built from its checksummed release source with a current Go toolchain and patched dependencies, since release binaries keep the advisories of the Go they were built with.

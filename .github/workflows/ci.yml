@@ -112,6 +112,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+          trivyignores: .trivyignore.yaml # accepted findings, each with a reason and an expiry
 
   host:
     name: Host recovery

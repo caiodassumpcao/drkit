@@ -1,0 +1,11 @@
+# Accepted findings of the Docker image scan (ci.yml, job "Docker image"). Each entry says why
+# and expires, so the scan fails again once the reason may no longer hold.
+vulnerabilities:
+  - id: CVE-2026-78661
+    paths:
+      - usr/libexec/docker/cli-plugins/docker-compose
+    statement: >-
+      Denial of service in golang.org/x/net/html, an indirect dependency of Docker Compose
+      v5.7.0 (the latest release, 2026-11-02). Compose does not use x/net/html, so the HTML
+      parser cannot be reached; drop this entry when Compose ships x/net >= 0.62.0.
+    expired_at: 2027-01-31
