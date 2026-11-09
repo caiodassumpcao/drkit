@@ -313,6 +313,19 @@ gh attestation verify drkit-1.0.0-py3-none-any.whl -R caiodassumpcao/drkit
 
 Release tags are signed too (`git tag -v v1.0.0`).
 
+### Known limitations
+
+- **restic on hosts.** `bootstrap.sh` installs restic's official release binary, checked by its
+  SHA-256. Release binaries keep the Go standard library and modules they were built with, so
+  scanners report the Go advisories published since (0.19.1 is built with Go 1.26.4), among
+  them one in `crypto/x509` that concerns the TLS connection to the storage. The Docker image
+  builds restic from source with a current Go and patched modules instead; on hosts, upgrade
+  restic as soon as upstream publishes a release built with a newer Go.
+- **MySQL 26 masking policies.** The `mysqldump` of MySQL 26.10 also dumps data masking
+  policies, which the application user usually cannot read: the dump succeeds with a warning
+  (`SELECT command denied … column_masking_policy`) and does not contain the policies. Recreate
+  them after a restore, or grant that user read access to them.
+
 Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
 ## Scope

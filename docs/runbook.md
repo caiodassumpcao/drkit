@@ -79,6 +79,12 @@ example `db-staging`, with the same image and credentials) and restore into it:
 drkit restore db shop --database orders --into db-staging
 ```
 
+### MySQL 26: masking policies
+
+With MySQL 26.10, dumps made by the application user leave out the data masking policies (the
+user cannot read them; the backup succeeds with a warning). After restoring such a database,
+recreate its masking policies by hand.
+
 ### Undo a database restore
 
 The safety dump holds the state the restore replaced. Find it by the restore ID printed at the
@@ -284,6 +290,14 @@ that project; once it succeeds, resume the host restore with `--from-step 6`.
 | 4 / 7 | `nginx -t failed` | Fix the configuration under `/etc/nginx`; it came from the backup. |
 | 6 | `certbot could not issue` | DNS not pointing here yet, or port 80 closed. |
 | 7 | `not healthy after …` | `docker compose logs`, `journalctl -u nginx`. |
+
+### restic on the rebuilt host
+
+`bootstrap.sh` installs restic's official release binary (checked by SHA-256). Vulnerability
+scanners flag it for the Go advisories published after it was built, one of them in
+`crypto/x509` (certificate verification of the TLS connection to the storage). Upgrade restic
+on the host as soon as upstream releases a build with a newer Go, or run drkit from the Docker
+image, whose restic is built from source with current dependencies.
 
 ### Rehearsing on CI
 
