@@ -7,8 +7,36 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-09
+
+drkit exposes its state to Prometheus through node_exporter's textfile collector, with
+ready-made alerting rules. The manifest gains one optional key; 1.0 manifests and state files
+keep working unchanged.
+
+### Added
+
+- **`drkit metrics [--output PATH]`** prints the Prometheus metrics built from `state.json`
+  (never opening the repository): the last backup run (time, duration, outcome, items by
+  status, bytes added), the last success per project, the last verify, prune, restore of each
+  kind (with its RTO) and drill (RTO and RPO). Every sample has a `host` label; metrics without
+  data are left out instead of exported as zero.
+- **`metrics.textfile`** in `dr.yaml`: when set, backup, verify, prune, the three restores and
+  drill rewrite that file atomically when they finish (temporary file in the same directory,
+  fsync, rename, mode `0644`). A failed write logs `metrics.not_written` and never changes the
+  command's outcome or exit code. `drkit doctor` checks that the directory exists and is
+  writable.
+- **Alerting rules** (`examples/prometheus/drkit.rules.yml`): stale or failed backups, verify
+  and prune, failed restores and a metrics file that stopped changing, with
+  `promtool test rules` cases for every alert.
+- **CI**: a pinned, checksum-verified promtool checks the output of `drkit metrics`, the rules
+  and their tests on every pull request.
+- `docs/monitoring.md`: setup, metric reference and alert tuning.
+
 ### Changed
 
+- `state.json` also records the last prune, the last restore of each kind, the last success of
+  each project and the item and byte totals of each run. All new fields are optional, so a
+  state file written by 1.0 still loads.
 - The README and the runbook install with the `bootstrap.sh` of the release tag instead of
   `main`, explain how to verify a release's build provenance (`gh attestation verify`) and
   document the known limitations of 1.0 (restic's upstream Go advisories on hosts, MySQL 26.10
@@ -215,7 +243,8 @@ First release: database backups to any S3-compatible storage, with retention and
 - Annotated example manifest, CI (lint, types, unit tests, build, Gitleaks), Dependabot,
   issue and pull request templates, `SECURITY.md`, `CONTRIBUTING.md`, ADRs 0001–0003.
 
-[Unreleased]: https://github.com/caiodassumpcao/drkit/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/caiodassumpcao/drkit/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/caiodassumpcao/drkit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/caiodassumpcao/drkit/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/caiodassumpcao/drkit/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/caiodassumpcao/drkit/compare/v0.2.0...v0.3.0

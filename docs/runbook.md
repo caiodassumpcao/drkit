@@ -219,7 +219,7 @@ Nothing on the lost server is needed. Before starting, have at hand:
    installs that release:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/v1.0.0/scripts/bootstrap.sh | sudo bash
+   curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/v1.1.0/scripts/bootstrap.sh | sudo bash
    ```
 
 2. **Put the keys back:**

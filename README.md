@@ -96,7 +96,7 @@ CI tests the oldest supported and the newest release of each database engine.
 ```bash
 # 1. Install drkit and what it needs (Docker, restic, git, Ansible, certbot); idempotent.
 #    The script of a release tag installs that release.
-curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/v1.0.0/scripts/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/v1.1.0/scripts/bootstrap.sh | sudo bash
 
 # 2. Credentials (keep a copy OUTSIDE this server — see Security)
 sudo install -d -m 700 /etc/drkit
@@ -218,7 +218,7 @@ Step-by-step procedures, including how to undo a restore: [runbook](docs/runbook
 
 ```bash
 # On a fresh Ubuntu server
-curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/v1.0.0/scripts/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/v1.1.0/scripts/bootstrap.sh | sudo bash
 
 # Put dr.yaml, restic.pass and env back in /etc/drkit (from your password manager)
 sudo drkit doctor
@@ -308,11 +308,11 @@ Every release's wheel and sdist carry a signed build provenance attestation (bui
 `release.yml` from the tag). Check a downloaded file before installing it:
 
 ```bash
-gh release download v1.0.0 -R caiodassumpcao/drkit
-gh attestation verify drkit-1.0.0-py3-none-any.whl -R caiodassumpcao/drkit
+gh release download v1.1.0 -R caiodassumpcao/drkit
+gh attestation verify drkit-1.1.0-py3-none-any.whl -R caiodassumpcao/drkit
 ```
 
-Release tags are signed too (`git tag -v v1.0.0`).
+Release tags are signed too (`git tag -v v1.1.0`).
 
 ### Known limitations
 
@@ -341,6 +341,7 @@ drkit is built for **Ubuntu servers running Docker Compose projects** with datab
 - [x] **v0.3** — Database and project restore
 - [x] **v0.4** — Full host restore with Ansible
 - [x] **v1.0** — Automated DR drill with measured RPO/RTO
+- [x] **v1.1** — Prometheus metrics and alerting rules
 
 ## Compatibility
 
