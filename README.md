@@ -7,6 +7,7 @@
 <p align="center">
   <a href="https://github.com/caiodassumpcao/drkit/actions/workflows/ci.yml"><img src="https://github.com/caiodassumpcao/drkit/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
   <a href="https://github.com/caiodassumpcao/drkit/actions/workflows/drill.yml"><img src="https://github.com/caiodassumpcao/drkit/actions/workflows/drill.yml/badge.svg" alt="DR drill"/></a>
+  <a href="https://github.com/caiodassumpcao/drkit/releases/latest"><img src="https://img.shields.io/github/v/release/caiodassumpcao/drkit?sort=semver" alt="Latest release"/></a>
   <img src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+"/>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"/></a>
 </p>
@@ -92,8 +93,9 @@ CI tests the oldest supported and the newest release of each database engine.
 ## Quick start
 
 ```bash
-# 1. Install drkit and what it needs (Docker, restic, git, Ansible, certbot); idempotent
-curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/main/scripts/bootstrap.sh | sudo bash
+# 1. Install drkit and what it needs (Docker, restic, git, Ansible, certbot); idempotent.
+#    The script of a release tag installs that release.
+curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/v1.0.0/scripts/bootstrap.sh | sudo bash
 
 # 2. Credentials (keep a copy OUTSIDE this server — see Security)
 sudo install -d -m 700 /etc/drkit
@@ -215,7 +217,7 @@ Step-by-step procedures, including how to undo a restore: [runbook](docs/runbook
 
 ```bash
 # On a fresh Ubuntu server
-curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/main/scripts/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/v1.0.0/scripts/bootstrap.sh | sudo bash
 
 # Put dr.yaml, restic.pass and env back in /etc/drkit (from your password manager)
 sudo drkit doctor
@@ -298,6 +300,18 @@ takes 247.0 s, the project 11.8 s and the certificate 3.3 s.
 - **Your recovery keys are `restic.pass` + storage credentials.** Store them in a password manager outside the server — without them, backups are unrecoverable.
 - Use a storage key scoped to a single bucket, and enable **versioning / object lock** to protect backups from ransomware.
 - drkit refuses to run if the manifest or credential files are readable by other users, and redacts secrets from logs and reports.
+
+### Verifying a release
+
+Every release's wheel and sdist carry a signed build provenance attestation (built by
+`release.yml` from the tag). Check a downloaded file before installing it:
+
+```bash
+gh release download v1.0.0 -R caiodassumpcao/drkit
+gh attestation verify drkit-1.0.0-py3-none-any.whl -R caiodassumpcao/drkit
+```
+
+Release tags are signed too (`git tag -v v1.0.0`).
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md).
 

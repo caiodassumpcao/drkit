@@ -209,10 +209,11 @@ Nothing on the lost server is needed. Before starting, have at hand:
 ### Procedure
 
 1. **Prepare the server** (installs Docker, restic, git, Ansible, certbot and drkit; safe to
-   run again):
+   run again). Use the script of the release you back up with (the tag in the URL); it
+   installs that release:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/main/scripts/bootstrap.sh | sudo bash
+   curl -fsSL https://raw.githubusercontent.com/caiodassumpcao/drkit/v1.0.0/scripts/bootstrap.sh | sudo bash
    ```
 
 2. **Put the keys back:**
