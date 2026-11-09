@@ -24,15 +24,15 @@ RUN curl -fsSL -o restic.tar.gz \
     && go get \
         github.com/go-jose/go-jose/v4@v4.1.6 \
         github.com/klauspost/compress@v1.18.7 \
-        golang.org/x/crypto@v0.57.0 \
-        golang.org/x/net@v0.60.0 \
-        golang.org/x/text@v0.42.0 \
+        golang.org/x/crypto@v0.58.0 \
+        golang.org/x/net@v0.62.0 \
+        golang.org/x/text@v0.43.0 \
         google.golang.org/grpc@v1.83.2 \
     && go mod tidy \
     && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /restic ./cmd/restic \
     && /restic version
 
-FROM python:3.12-slim-trixie@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54 AS build
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS build
 COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /src
 COPY pyproject.toml uv.lock README.md LICENSE ./
@@ -45,10 +45,12 @@ RUN uv venv /opt/drkit \
     && uv build --wheel --out-dir /dist \
     && uv pip install --python /opt/drkit/bin/python --no-deps /dist/*.whl
 
-FROM python:3.12-slim-trixie@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-# Docker CLI and Compose from Docker's signed repository.
+# Debian security updates published after the base image, then the Docker CLI and Compose
+# from Docker's signed repository.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg git openssh-client \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
