@@ -13,7 +13,7 @@ from typing import Literal
 import httpx
 import structlog
 
-from drkit import __version__, lock, runner, state
+from drkit import __version__, lock, metrics, runner, state
 from drkit.config import LoadedConfig, Manifest, Project, Retention
 from drkit.errors import ConfigError, DrkitError, ExitCode
 from drkit.notify import notify
@@ -192,6 +192,7 @@ def run_backup(
                 )
             except DrkitError as exc:
                 report.errors.append(f"state: {exc.message}")
+            metrics.refresh(manifest, state_directory)  # never changes the outcome
 
             log.info(
                 "backup.finish",
@@ -234,7 +235,7 @@ def run_prune(
             forgotten = repo.forget(snapshot.id for snapshot in orphans)
             repo.prune()
         except DrkitError as exc:
-            _record_prune("failed", state_directory)
+            _record_prune(manifest, "failed", state_directory)
             notify(
                 manifest.notifications,
                 "failure",
@@ -242,7 +243,7 @@ def run_prune(
                 client=http_client,
             )
             raise
-    _record_prune("ok", state_directory)
+    _record_prune(manifest, "ok", state_directory)
     report = PruneReport(
         orphan_runs=sorted({run for s in orphans if (run := s.tag_value("run"))}),
         forgotten_snapshots=forgotten,
@@ -251,11 +252,14 @@ def run_prune(
     return report
 
 
-def _record_prune(status: Literal["ok", "failed"], directory: Path | None) -> None:
+def _record_prune(
+    manifest: Manifest, status: Literal["ok", "failed"], directory: Path | None
+) -> None:
     try:
         state.record_prune(status, directory)
     except DrkitError as exc:
         log.warning("prune.state_not_recorded", error=exc.message)
+    metrics.refresh(manifest, directory)
 
 
 def apply_retention(restic: Restic, retention: Retention, *, protect: str) -> RetentionResult:

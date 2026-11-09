@@ -6,6 +6,7 @@ Rendering lives in the CLI; this module only produces results.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -34,6 +35,7 @@ class Category(StrEnum):
     DEPENDENCIES = "dependencies"
     REPOSITORY = "repository"
     PROJECTS = "projects"
+    METRICS = "metrics"
 
 
 class Status(StrEnum):
@@ -161,6 +163,8 @@ def run_checks(config_path: Path, *, environ: Mapping[str, str] | None = None) -
         checks.append(
             check_repository(Restic(manifest.repository, host=manifest.host, env=loaded.env))
         )
+    if loaded is not None and loaded.manifest.metrics is not None:
+        checks.append(check_metrics(loaded.manifest.metrics.textfile))
     if loaded is not None and available(DOCKER):
         for project in loaded.manifest.projects:
             checks.extend(check_project(project, git_available=available(GIT)))
@@ -223,6 +227,22 @@ def _compose_status(project: Project) -> tuple[Status, str, str | None]:
     except DrkitError as exc:
         return Status.FAIL, exc.message, exc.hint
     return Status.OK, f"valid ({_plural(len(config.get('services') or {}), 'service')})", None
+
+
+def check_metrics(textfile: Path) -> Check:
+    """The directory of ``metrics.textfile`` exists and drkit can create files in it."""
+    directory = textfile.parent
+    hint = (
+        f"create {directory} (the node_exporter --collector.textfile.directory) and make it "
+        "writable by the user running drkit"
+    )
+    if not directory.is_dir():
+        return Check(Category.METRICS, str(textfile), Status.FAIL, f"{directory} not found", hint)
+    if not os.access(directory, os.W_OK | os.X_OK):
+        return Check(
+            Category.METRICS, str(textfile), Status.FAIL, f"{directory} is not writable", hint
+        )
+    return Check(Category.METRICS, str(textfile), Status.OK, "directory writable")
 
 
 def check_repository(restic: Restic) -> Check:

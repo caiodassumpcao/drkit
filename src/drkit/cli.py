@@ -12,6 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
+import structlog
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -536,6 +537,7 @@ def _restore(
         notifications=manifest.notifications,
         host=manifest.host,
     )
+    metrics_module.refresh(manifest)  # never changes the outcome
     if options.json:
         _echo_json(report.to_dict())
     else:
@@ -625,6 +627,7 @@ def drill_command(
             "containers, volumes and images)",
         )
     report = drill_module.run(on_step=None if options.json else _render_step)
+    _refresh_metrics_after_drill(options)
     if options.json:
         _echo_json(report.to_dict())
     else:
@@ -642,6 +645,17 @@ def drill_command(
         for error in report.errors:
             err_console.print(f"[yellow]warning:[/yellow] {escape(redact(error))}")
     raise typer.Exit(int(ExitCode.OK if report.ok else ExitCode.PARTIAL_FAILURE))
+
+
+def _refresh_metrics_after_drill(options: Options) -> None:
+    """The drill runs from its own manifest; the host's metrics file (if the host has a
+    manifest with metrics.textfile) gets the new drill outcome too. Never fails the drill."""
+    if not options.config_path.is_file():
+        return
+    try:
+        metrics_module.refresh(_load(options).manifest)
+    except DrkitError as exc:
+        structlog.get_logger(__name__).warning("metrics.not_written", error=exc.message)
 
 
 runs_app = typer.Typer(help="Inspect backup runs.", no_args_is_help=True)

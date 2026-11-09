@@ -19,7 +19,7 @@ from typing import Literal
 import httpx
 import structlog
 
-from drkit import docker, runner, state
+from drkit import docker, metrics, runner, state
 from drkit.config import LoadedConfig, Manifest
 from drkit.errors import DrkitError, ExitCode
 from drkit.notify import notify
@@ -109,6 +109,7 @@ def run_verify(
             state.record_verify(run.run_id, "ok" if report.ok else "failed", state_directory)
         except DrkitError as exc:
             report.errors.append(f"state: {exc.message}")
+        metrics.refresh(manifest, state_directory)  # never changes the outcome
         log.info("verify.finish", ok=report.ok, databases=len(report.databases))
         report.notify_errors = _notify(
             manifest,
