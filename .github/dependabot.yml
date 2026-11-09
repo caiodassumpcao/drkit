@@ -7,6 +7,10 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+      # One weekly PR for routine updates; a new major still gets a PR of its own.
+      production-dependencies:
+        dependency-type: production
+        update-types: [minor, patch]
     commit-message:
       prefix: build
       include: scope
