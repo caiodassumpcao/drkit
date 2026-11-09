@@ -5,12 +5,15 @@ the keys to its backups. Security reports are taken seriously and handled with p
 
 ## Supported versions
 
-drkit is pre-1.0. Only the latest release receives fixes.
+Security fixes go to the latest minor release of the current major version (1.x); upgrading
+within a major version is always compatible (see
+[Compatibility](README.md#compatibility)).
 
 | Version | Supported |
 |---|---|
-| latest release | ✅ |
-| older releases | ❌ |
+| latest 1.x release | ✅ |
+| older 1.x releases | ❌ (upgrade to the latest 1.x) |
+| 0.x | ❌ |
 
 ## Reporting a vulnerability
 
