@@ -27,7 +27,7 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - name: shellcheck
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh .github/scripts/*.sh
 
   test:
     name: Unit tests
@@ -80,6 +80,21 @@ jobs:
         run: >-
           sudo --preserve-env=PATH,DRKIT_IT_VERSIONS
           .venv/bin/python -m pytest -m integration --no-cov -rs
+
+  metrics:
+    name: Metrics (promtool)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install promtool
+        run: bash .github/scripts/install-promtool.sh
+      - run: uv sync --locked
+      - name: drkit metrics output, alerting rules and their tests
+        run: DRKIT_REQUIRE_PROMTOOL=1 uv run pytest tests/unit/test_promtool.py --no-cov -v
 
   audit:
     name: Dependency audit
