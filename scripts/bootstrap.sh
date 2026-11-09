@@ -12,7 +12,7 @@
 #   DRKIT_ALLOW_UNSUPPORTED=1 run on a release other than Ubuntu 22.04 / 24.04
 set -euo pipefail
 
-readonly DRKIT_VERSION="1.0.0"
+readonly DRKIT_VERSION="1.1.0"
 readonly DRKIT_SPEC="${DRKIT_SPEC:-git+https://github.com/caiodassumpcao/drkit.git@v${DRKIT_VERSION}}"
 readonly RESTIC_VERSION="0.19.1"
 readonly UV_VERSION="0.13.6"
