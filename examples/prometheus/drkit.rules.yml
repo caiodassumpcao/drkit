@@ -1,0 +1,75 @@
+# Prometheus alerting rules for drkit's metrics (docs/monitoring.md).
+#
+# Each "stale" threshold is twice the interval of the matching timer of examples/systemd
+# (backup hourly, verify daily, prune weekly): adjust them if your timers differ, e.g.
+# 2 * 6 * 3600 for a backup every 6 hours. Tested by drkit.rules.test.yml (promtool test rules).
+groups:
+  - name: drkit
+    rules:
+      - alert: DrkitBackupStale
+        expr: time() - drkit_last_success_timestamp_seconds > 2 * 3600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful drkit backup on {{ $labels.host }} in the last 2 hours"
+          description: "The RPO is growing: check `drkit runs list` and the backup timer."
+
+      - alert: DrkitBackupFailed
+        expr: drkit_last_run_success == 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The last drkit backup run on {{ $labels.host }} had failed items"
+          description: "`drkit runs show latest` lists the failed items and their errors."
+
+      - alert: DrkitVerifyFailed
+        expr: drkit_last_verify_success == 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "drkit verify failed on {{ $labels.host }}"
+          description: "A backup could not be restored or the repository check failed: run `drkit verify`."
+
+      - alert: DrkitVerifyStale
+        expr: time() - drkit_last_verify_timestamp_seconds > 2 * 86400
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "drkit verify has not run on {{ $labels.host }} for 2 days"
+          description: "Check the drkit-verify timer."
+
+      - alert: DrkitPruneFailed
+        expr: drkit_last_prune_success == 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "drkit prune failed on {{ $labels.host }}"
+          description: "Unreferenced data accumulates in the repository: run `drkit prune`."
+
+      - alert: DrkitPruneStale
+        expr: time() - drkit_last_prune_timestamp_seconds > 2 * 7 * 86400
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "drkit prune has not run on {{ $labels.host }} for 2 weeks"
+          description: "Check the drkit-prune timer."
+
+      - alert: DrkitRestoreFailed
+        expr: drkit_last_restore_success == 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The last drkit {{ $labels.kind }} restore on {{ $labels.host }} failed"
+          description: "The report in /var/lib/drkit/reports/ says which step failed and how to resume."
+
+      - alert: DrkitMetricsStale
+        expr: time() - node_textfile_mtime_seconds{file=~".*drkit.prom"} > 2 * 3600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "drkit metrics on {{ $labels.instance }} have not been updated for 2 hours"
+          description: "drkit rewrites the file after every backup: the backup timer may be stopped, or the file not writable (`drkit doctor`)."

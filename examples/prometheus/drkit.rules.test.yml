@@ -1,0 +1,145 @@
+# promtool test rules drkit.rules.test.yml
+rule_files: [drkit.rules.yml]
+evaluation_interval: 1m
+
+tests:
+  # A healthy host: everything recent and successful, nothing fires.
+  - interval: 1m
+    input_series:
+      - series: 'drkit_last_success_timestamp_seconds{host="prod-01"}'
+        values: "0+60x120"
+      - series: 'drkit_last_run_success{host="prod-01"}'
+        values: "1x120"
+      - series: 'drkit_last_verify_timestamp_seconds{host="prod-01"}'
+        values: "0x120"
+      - series: 'drkit_last_verify_success{host="prod-01"}'
+        values: "1x120"
+      - series: 'drkit_last_prune_timestamp_seconds{host="prod-01"}'
+        values: "0x120"
+      - series: 'drkit_last_prune_success{host="prod-01"}'
+        values: "1x120"
+      - series: 'drkit_last_restore_success{host="prod-01",kind="db"}'
+        values: "1x120"
+      - series: 'node_textfile_mtime_seconds{instance="prod-01:9100",file="/var/lib/node_exporter/textfile_collector/drkit.prom"}'
+        values: "0+60x120"
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: DrkitBackupStale
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: DrkitBackupFailed
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: DrkitVerifyFailed
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: DrkitPruneFailed
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: DrkitRestoreFailed
+        exp_alerts: []
+      - eval_time: 2h
+        alertname: DrkitMetricsStale
+        exp_alerts: []
+
+  # Backups stopped at t=0: stale after 2 hours (plus 5 minutes "for"), and so is the file.
+  - interval: 1m
+    input_series:
+      - series: 'drkit_last_success_timestamp_seconds{host="prod-01"}'
+        values: "0x200"
+      - series: 'node_textfile_mtime_seconds{instance="prod-01:9100",file="/var/lib/node_exporter/textfile_collector/drkit.prom"}'
+        values: "0x200"
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: DrkitBackupStale
+        exp_alerts: []
+      - eval_time: 2h10m
+        alertname: DrkitBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: prod-01
+            exp_annotations:
+              summary: "No successful drkit backup on prod-01 in the last 2 hours"
+              description: "The RPO is growing: check `drkit runs list` and the backup timer."
+      - eval_time: 2h10m
+        alertname: DrkitMetricsStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: prod-01:9100
+              file: /var/lib/node_exporter/textfile_collector/drkit.prom
+            exp_annotations:
+              summary: "drkit metrics on prod-01:9100 have not been updated for 2 hours"
+              description: "drkit rewrites the file after every backup: the backup timer may be stopped, or the file not writable (`drkit doctor`)."
+
+  # Failures fire at once.
+  - interval: 1m
+    input_series:
+      - series: 'drkit_last_run_success{host="prod-01"}'
+        values: "0x10"
+      - series: 'drkit_last_verify_success{host="prod-01"}'
+        values: "0x10"
+      - series: 'drkit_last_prune_success{host="prod-01"}'
+        values: "0x10"
+      - series: 'drkit_last_restore_success{host="prod-01",kind="project"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: DrkitBackupFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, host: prod-01}
+            exp_annotations:
+              summary: "The last drkit backup run on prod-01 had failed items"
+              description: "`drkit runs show latest` lists the failed items and their errors."
+      - eval_time: 1m
+        alertname: DrkitVerifyFailed
+        exp_alerts:
+          - exp_labels: {severity: critical, host: prod-01}
+            exp_annotations:
+              summary: "drkit verify failed on prod-01"
+              description: "A backup could not be restored or the repository check failed: run `drkit verify`."
+      - eval_time: 1m
+        alertname: DrkitPruneFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, host: prod-01}
+            exp_annotations:
+              summary: "drkit prune failed on prod-01"
+              description: "Unreferenced data accumulates in the repository: run `drkit prune`."
+      - eval_time: 1m
+        alertname: DrkitRestoreFailed
+        exp_alerts:
+          - exp_labels: {severity: critical, host: prod-01, kind: project}
+            exp_annotations:
+              summary: "The last drkit project restore on prod-01 failed"
+              description: "The report in /var/lib/drkit/reports/ says which step failed and how to resume."
+
+  # Verify and prune that stopped running (samples every 4 minutes: within the 5-minute
+  # lookback, so the series never goes stale between them).
+  - interval: 4m
+    input_series:
+      - series: 'drkit_last_verify_timestamp_seconds{host="prod-01"}'
+        values: "0x5100"
+      - series: 'drkit_last_prune_timestamp_seconds{host="prod-01"}'
+        values: "0x5100"
+    alert_rule_test:
+      - eval_time: 47h
+        alertname: DrkitVerifyStale
+        exp_alerts: []
+      - eval_time: 49h
+        alertname: DrkitVerifyStale
+        exp_alerts:
+          - exp_labels: {severity: warning, host: prod-01}
+            exp_annotations:
+              summary: "drkit verify has not run on prod-01 for 2 days"
+              description: "Check the drkit-verify timer."
+      - eval_time: 335h
+        alertname: DrkitPruneStale
+        exp_alerts: []
+      - eval_time: 337h
+        alertname: DrkitPruneStale
+        exp_alerts:
+          - exp_labels: {severity: warning, host: prod-01}
+            exp_annotations:
+              summary: "drkit prune has not run on prod-01 for 2 weeks"
+              description: "Check the drkit-prune timer."
