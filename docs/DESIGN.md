@@ -125,6 +125,7 @@ src/drkit/
 ├── drill.py             # drkit drill --local (§8)
 ├── health.py            # HTTP healthchecks with retry/backoff
 ├── notify.py            # telegram, generic webhook (Slack-compatible)
+├── metrics.py           # Prometheus text format from state.json, textfile writes (§10.1)
 └── report.py            # JSON + Markdown reports (runs, restore, drill)
 ```
 
@@ -212,6 +213,9 @@ notifications:
     chat_id: "123456789"
   webhook:
     url: ${DRKIT_WEBHOOK_URL}         # Slack-compatible JSON {"text": ...}
+
+metrics:                              # optional (1.1): Prometheus metrics for node_exporter
+  textfile: /var/lib/node_exporter/textfile_collector/drkit.prom   # absolute, ends in .prom
 ```
 
 Validation rules (must have unit tests):
@@ -410,11 +414,38 @@ Report (`$DRKIT_STATE_DIR/reports/drill-<id>.json`, `--json`, and `$GITHUB_STEP_
 ## 10. Observability
 
 - Logs: structlog JSON (`event`, `run_id`, `item`, `duration_s`, `status`) to stderr → journald (human-readable on a TTY). stdout is reserved for command output, so `--json` stays machine-parseable. Every log value passes through the redactor.
-- `state.json`: last run/verify/drill status and timestamps.
+- `state.json` (`$DRKIT_STATE_DIR`, written atomically; unknown keys are ignored, so a newer drkit's file still loads):
+  - `last_run`, `last_success`: run ID, status, start and end; since 1.1 also `items_ok`, `items_failed` and `bytes_added` (new data stored by the run, after deduplication, summed from restic's backup summaries);
+  - `last_verify`, `last_drill` (status, time, drill RTO and RPO);
+  - since 1.1: `projects.<name>` (run ID and end of the last run in which every item of the project succeeded), `last_prune` (status, time), `last_restores.<db|project|host>` (restore ID, status, time, RTO: host, start to the last green healthcheck; db and project, duration; only for successful restores; drill restores are not recorded).
+  All 1.1 fields are optional: a state file written by 1.0 loads, and its metrics simply lack them.
 - Restore reports: one JSON file per restore in `$DRKIT_STATE_DIR/reports/` (§7), plus the Ansible log of each host restore (`ansible-<restore_id>.log`).
 - `drkit report [--format md|json] [--limit 10]`: last N runs (status, items, size, duration — read from their run manifests), current RPO (time since the last `ok` run, from the repository), last verify (from `state.json`), last drill RTO (from v1.0). Markdown by default, so it can be pasted into an issue or a status page.
 - Exit codes: `0` ok · `1` partial failure · `2` config error · `3` lock held · `4` missing dependency · `5` restore aborted. `doctor` reports the most important failure: config/permissions (`2`), then dependencies (`4`), then repository access or project checks — directory present, compose files valid, git remote readable with the deploy key, database services running, volumes created and not external (`1`).
 - Environment overrides (tests, unprivileged development): `DRKIT_CONFIG`, `DRKIT_STATE_DIR`, `DRKIT_LOCK_FILE`.
+
+### 10.1 Prometheus metrics
+
+For node_exporter's textfile collector (`docs/monitoring.md`). Generated from `state.json` only, never from the repository, in the Prometheus text exposition format: `# HELP` and `# TYPE` for each family, all gauges, a `host` label (the manifest's) on every sample, Unix timestamps and durations in seconds, sizes in bytes, label values escaped (`\`, `"`, newline). **A metric without data is omitted**, never exported as zero.
+
+| Family | Extra labels | Source |
+|---|---|---|
+| `drkit_info` (= 1) | `version` | drkit |
+| `drkit_last_run_timestamp_seconds`, `drkit_last_run_duration_seconds`, `drkit_last_run_success` | | `last_run` |
+| `drkit_last_success_timestamp_seconds` | | `last_success` |
+| `drkit_last_run_items` | `status` (`ok`, `failed`) | `last_run.items_ok`, `items_failed` |
+| `drkit_last_run_bytes_added` | | `last_run.bytes_added` |
+| `drkit_project_last_success_timestamp_seconds` | `project` | `projects` |
+| `drkit_last_verify_timestamp_seconds`, `drkit_last_verify_success` | | `last_verify` |
+| `drkit_last_prune_timestamp_seconds`, `drkit_last_prune_success` | | `last_prune` |
+| `drkit_last_restore_timestamp_seconds`, `drkit_last_restore_success`, `drkit_last_restore_rto_seconds` | `kind` | `last_restores` |
+| `drkit_last_drill_timestamp_seconds`, `drkit_last_drill_success`, `drkit_last_drill_rto_seconds`, `drkit_last_drill_rpo_seconds` | | `last_drill` |
+
+- `drkit metrics [--output PATH]` prints them, or writes them atomically.
+- With `metrics.textfile`, backup, verify, prune, the three restores and the drill rewrite the file after recording their outcome. The drill runs from its own manifest and refreshes the host's file only when the host has a manifest with `metrics.textfile`.
+- Atomic write: a temporary file in the same directory whose name does not end in `.prom` (ignored by the collector), `fsync`, mode `0644` (node_exporter runs as its own user), rename. A failure is a logged warning (`metrics.not_written`); it never changes a command's result or exit code.
+- `doctor` checks that the file's directory exists and is writable (category `metrics`, exit code `1` on failure).
+- `examples/prometheus/drkit.rules.yml`: alerting rules (stale or failed backup, verify, prune; failed restore; stale file through `node_textfile_mtime_seconds`), with `promtool test rules` coverage.
 
 ---
 
@@ -434,6 +465,7 @@ Report (`$DRKIT_STATE_DIR/reports/drill-<id>.json`, `--json`, and `$GITHUB_STEP_
 | `drkit drill --local` | DR drill |
 | `drkit prune` | Forget snapshots of runs without manifest older than 24 h, then `restic prune` (weekly) |
 | `drkit report [--format md\|json] [--limit n]` | Status report |
+| `drkit metrics [--output path]` | Prometheus metrics from `state.json` (§10.1) |
 | Global | `--config`, `--json` (machine output), `--verbose`, `--version` |
 
 ---
@@ -446,13 +478,14 @@ Report (`$DRKIT_STATE_DIR/reports/drill-<id>.json`, `--json`, and `$GITHUB_STEP_
 | Integration | pytest marker `integration`, run twice in CI: against the newest release of each database engine and, with `DRKIT_IT_VERSIONS=oldest` (`tests/integration/oldest/compose.yaml`), the oldest supported one. Docker Compose fixtures (`tests/integration/compose.yaml`, images pinned by digest: MinIO via the community `pgsty/minio` build since upstream images are no longer published, PostgreSQL, MySQL, MariaDB, a BusyBox app with a volume), run as root with `--no-cov` in CI (volume data is root-only, as in production; the full-run test is skipped where volume data is unreachable) | each source backs up; dump-failure handling; retention; a full run with every item kind; stopped services restart after a failure; verify restores each engine; prune; `restore db` with its safety dumps on each engine; `restore project` rebuilds a destroyed demo project (`tests/integration/demo/`: containers, volumes and directory removed) with identical rows, file checksums and a green healthcheck |
 | Host | pytest marker `host`, only as root with `DRKIT_HOST_TEST=1` (destructive), CI job `Host recovery` on a throwaway runner | `bootstrap.sh` (twice), then backup → destroy a project, its volumes, nginx site, certificates and an enabled unit → `restore host` with a real playbook and `tls.strategy: reissue` against a local ACME server (Pebble + pebble-challtestsrv, no public DNS) → identical data and configuration, nginx serving the new certificate, the unit enabled again, per-step timings in the job summary |
 | End-to-end | `drkit drill --local` in CI (§8) | backup → disaster → restore, with `tls.strategy: restore`; RPO/RTO measured |
+| Metrics | promtool (pinned, CI job `Metrics`) | `drkit metrics` output (`check metrics`), example alerting rules (`check rules`, `test rules`) |
 | Static | ruff (lint + format), mypy `--strict` | everything |
 
 ---
 
 ## 13. CI/CD (GitHub Actions)
 
-- `ci.yml` (push/PR): ruff, mypy, shellcheck, unit tests + coverage, build sdist + wheel, integration tests against the oldest and the newest database releases, host recovery (§12), Docker image build + smoke test + Trivy (fails on any HIGH/CRITICAL finding with a fix available; an accepted finding goes to `.trivyignore.yaml` with its reason and an expiry date), pip-audit on the locked runtime dependencies, Gitleaks.
+- `ci.yml` (push/PR): ruff, mypy, shellcheck, unit tests + coverage, build sdist + wheel, integration tests against the oldest and the newest database releases, host recovery (§12), metrics and alerting rules checked by a pinned promtool (`check metrics`, `check rules`, `test rules`), Docker image build + smoke test + Trivy (fails on any HIGH/CRITICAL finding with a fix available; an accepted finding goes to `.trivyignore.yaml` with its reason and an expiry date), pip-audit on the locked runtime dependencies, Gitleaks.
 - `drill.yml` (push to `main`, pull requests, weekly cron, manual): DR drill (§8), job summary + `drill-report.json` artifact; status badge in README.
 - `release.yml` (signed tag `v*`, pushed once CI and the drill are green): checks the tag matches the package version, builds sdist + wheel, attests their build provenance (`actions/attest-build-provenance`), publishes the GitHub Release with both and the notes of that version from `CHANGELOG.md`.
 - `Dockerfile`: drkit with the Docker CLI, Compose, git and restic, on pinned bases. restic is built from its checksummed release source with a current Go toolchain and patched dependencies, since release binaries keep the advisories of the Go they were built with.
@@ -545,6 +578,12 @@ Each phase = one branch, one PR, one release tag. A phase is done only when **al
 - TLS reissue end to end against Pebble; enabled units restored; supported database versions with an oldest/newest test matrix; compatibility policy (§16).
 
 **Done when:** drill passes in CI with fixtures identical, RTO/RPO published, release `v1.0.0` created.
+
+### v1.1 — Prometheus metrics (`feat/prometheus-metrics`, `v1.1.0`)
+- `metrics.textfile` (optional manifest key), `drkit metrics`, refresh after every command, `doctor` check; `state.json` extended (§10).
+- Alerting rules with promtool tests; `docs/monitoring.md`.
+
+**Done when:** `drkit metrics` output passes `promtool check metrics` in CI; every command refreshes the file and a write failure never changes the exit code (tested); the rules pass `promtool check rules` and `test rules` in CI.
 
 ---
 
