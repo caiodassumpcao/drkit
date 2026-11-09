@@ -29,6 +29,14 @@ uv run pytest                  # unit tests, coverage gate at 85 %
 uv run pytest -m integration   # needs Docker
 ```
 
+Integration tests run against the newest release of each database engine; set
+`DRKIT_IT_VERSIONS=oldest` to run them against the oldest supported ones, as CI does too.
+Volume tests need root (volume data is root-only) and are skipped otherwise.
+
+Tests marked `host` rebuild the machine they run on (`/etc`, `/srv`, a hardening playbook): they
+only run as root with `DRKIT_HOST_TEST=1`, on a disposable host such as the CI job
+"Host recovery". `drkit drill --local` likewise belongs on a disposable host.
+
 ## Code guidelines
 
 - Type hints everywhere; `mypy --strict` must stay clean.
@@ -38,7 +46,8 @@ uv run pytest -m integration   # needs Docker
 - Expected failures raise a subclass of `drkit.errors.DrkitError` with an actionable message
   (what failed + how to fix it), which maps to a documented exit code.
 - Never put secret values in messages, logs or exceptions.
-- Tests that need Docker or external services are marked `@pytest.mark.integration`.
+- Tests that need Docker or external services are marked `@pytest.mark.integration`; tests
+  that modify the host are marked `@pytest.mark.host`.
 
 ## Commits and pull requests
 
