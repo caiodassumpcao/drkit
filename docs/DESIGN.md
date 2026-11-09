@@ -480,8 +480,8 @@ drkit/
 │   └── systemd/
 ├── scripts/bootstrap.sh
 ├── src/drkit/ …
-├── tests/ (unit/, integration/, fixtures/)
-├── Dockerfile
+├── tests/ (unit/, integration/ with demo/ and oldest/, host/ with pebble/)
+├── Dockerfile · .trivyignore.yaml
 ├── pyproject.toml · uv.lock
 ├── .gitattributes · .gitignore · .editorconfig · .pre-commit-config.yaml
 ├── CHANGELOG.md · CONTRIBUTING.md · SECURITY.md · LICENSE
