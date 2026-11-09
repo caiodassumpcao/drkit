@@ -205,6 +205,7 @@ def make_drkit(tmp_path: Path, stack: Stack, monkeypatch: pytest.MonkeyPatch) ->
         bucket: str | None = None,
         projects: dict[str, dict[str, Any]] | None = None,
         system: dict[str, Any] | None = None,
+        metrics: Path | None = None,
     ) -> Drkit:
         """``databases`` per project; ``projects`` adds or overrides project fields."""
         extra = projects or {}
@@ -237,6 +238,8 @@ def make_drkit(tmp_path: Path, stack: Stack, monkeypatch: pytest.MonkeyPatch) ->
         }
         if system:
             manifest["system"] = system
+        if metrics:
+            manifest["metrics"] = {"textfile": str(metrics)}
         if webhook_url:
             manifest["notifications"] = {
                 "on": ["failure"],
