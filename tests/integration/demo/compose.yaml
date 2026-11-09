@@ -3,13 +3,14 @@
 # which drkit backs up as a secret. Images are pinned by digest; Dependabot proposes updates.
 services:
   db:
-    image: postgres:16.14@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+    image: postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: shop
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # The parent directory: PostgreSQL 18+ images keep the data in a per-version subdirectory.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       # TCP on purpose: the entrypoint's temporary init server only listens on the socket.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d shop"]
