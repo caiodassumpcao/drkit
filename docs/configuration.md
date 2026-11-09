@@ -38,6 +38,7 @@ notification.
 | `system` | mapping | no | [Host configuration](#system): Ansible, system paths, TLS. |
 | `projects` | list | no | [The Compose projects](#projects) of the server. Names are unique. |
 | `notifications` | mapping | no | [Alerts](#notifications). |
+| `metrics` | mapping | no | [Prometheus metrics file](#metrics) (since 1.1). |
 
 ## `repository`
 
@@ -180,6 +181,20 @@ code.
 | `telegram.chat_id` | string | — | Chat to post to. |
 | `webhook.url` | http(s) URL | — | Receives `{"text": …}` (Slack-compatible). Use `${DRKIT_WEBHOOK_URL}`. |
 
+## `metrics`
+
+Since 1.1. Optional: without it, drkit writes no metrics file (`drkit metrics` still prints
+them). See [monitoring.md](monitoring.md).
+
+| Key | Type | Description |
+|---|---|---|
+| `textfile` | absolute path ending in `.prom` | File in node_exporter's `--collector.textfile.directory`, rewritten atomically (mode `0644`) after every backup, verify, prune, restore and drill. Its directory must exist and be writable (`doctor` checks it); a failed write is only a warning. |
+
+```yaml
+metrics:
+  textfile: /var/lib/node_exporter/textfile_collector/drkit.prom
+```
+
 ## Files and directories drkit uses
 
 | Path | Override | Content |
@@ -187,4 +202,5 @@ code.
 | `/etc/drkit/dr.yaml` | `--config`, `$DRKIT_CONFIG` | The manifest |
 | `/var/lib/drkit/state.json` | `$DRKIT_STATE_DIR` | Last run, verify and drill |
 | `/var/lib/drkit/reports/` | `$DRKIT_STATE_DIR` | Restore and drill reports, Ansible logs |
+| `metrics.textfile` | — | Prometheus metrics, if configured |
 | `/run/drkit.lock` | `$DRKIT_LOCK_FILE` | Run lock (backup, prune, restores) |

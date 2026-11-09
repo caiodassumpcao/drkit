@@ -90,3 +90,8 @@ notifications:                        # optional
     chat_id: "123456789"
   webhook:
     url: ${DRKIT_WEBHOOK_URL}         # Slack-compatible JSON {"text": ...}
+
+metrics:                              # optional: Prometheus metrics (docs/monitoring.md)
+  # In node_exporter's --collector.textfile.directory; must end in .prom. Rewritten after
+  # every backup, verify, prune, restore and drill.
+  textfile: /var/lib/node_exporter/textfile_collector/drkit.prom
