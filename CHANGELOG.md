@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The README and the runbook install with the `bootstrap.sh` of the release tag instead of
+  `main`, explain how to verify a release's build provenance (`gh attestation verify`) and
+  document the known limitations of 1.0 (restic's upstream Go advisories on hosts, MySQL 26.10
+  masking policies left out of dumps).
+
 ## [1.0.0] - 2026-11-06
 
 The recovery is proven on every change: a drill backs up, destroys and restores a demo
