@@ -37,6 +37,7 @@ Most servers have *backups*. Few have *recovery*. A database dump in a bucket do
 | ✅ **Verification** | Integrity check + restore of each dump into an ephemeral container |
 | 🧪 **DR drill** | Backup → simulated disaster → full recovery → data checksum validation, in CI |
 | 🔔 **Alerts** | Telegram and Slack-compatible webhooks |
+| 📈 **Metrics** | Prometheus metrics through node_exporter's textfile collector, with alerting rules |
 | 🧾 **Retention** | Daily / weekly / monthly policy, separate prune schedule |
 
 ## How it works
@@ -349,6 +350,38 @@ the run-manifest schema (`"schema": 1`, with its snapshot tags). Anything that b
 them is a new major version; minor versions only add. A newer 1.x always restores backups
 made by an older one. Details: [DESIGN §16](docs/DESIGN.md#16-compatibility-from-10).
 
+## Monitoring
+
+drkit exposes its state to Prometheus through node_exporter's
+[textfile collector](https://github.com/prometheus/node_exporter#textfile-collector): no daemon,
+no port. Configure the file once:
+
+```yaml
+metrics:
+  textfile: /var/lib/node_exporter/textfile_collector/drkit.prom
+```
+
+and every backup, verify, prune, restore and drill rewrites it atomically (a failed write never
+changes a command's outcome). `drkit metrics` prints the same metrics from `state.json`, without
+opening the repository:
+
+```console
+$ sudo drkit metrics | grep -E 'success|items'
+drkit_last_success_timestamp_seconds{host="it-host"} 1794244127.196335
+drkit_last_run_success{host="it-host"} 1
+drkit_last_run_items{host="it-host",status="ok"} 2
+drkit_last_run_items{host="it-host",status="failed"} 0
+drkit_project_last_success_timestamp_seconds{host="it-host",project="shop"} 1794244127.196335
+drkit_last_verify_success{host="it-host"} 1
+drkit_last_prune_success{host="it-host"} 1
+drkit_last_restore_success{host="it-host",kind="db"} 1
+```
+
+[`examples/prometheus/drkit.rules.yml`](examples/prometheus/drkit.rules.yml) alerts on stale or
+failed backups, verify and prune, failed restores and a metrics file that stopped changing;
+CI checks the metrics and the rules with `promtool` and covers every alert with
+`promtool test rules`. Details: [docs/monitoring.md](docs/monitoring.md).
+
 ## Docker image
 
 The [`Dockerfile`](Dockerfile) builds drkit with the Docker CLI, Compose, git and restic, for
@@ -369,6 +402,7 @@ CI scans the image with Trivy and fails on any fixable HIGH or CRITICAL finding.
 - [Design specification](docs/DESIGN.md)
 - [Configuration reference](docs/configuration.md)
 - [Recovery runbook](docs/runbook.md)
+- [Monitoring with Prometheus](docs/monitoring.md)
 - [Architecture decision records](docs/adr/)
 
 ## Development
