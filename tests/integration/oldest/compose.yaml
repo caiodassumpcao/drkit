@@ -2,7 +2,7 @@
 # Dependabot only proposes patch updates here: these lines are the floor of the support matrix.
 services:
   db:
-    image: postgres:14.24@sha256:85297aaaf7d3b5ce72a8957d085948c0e65cd7a6f20025ea6ad104654cc105fb
+    image: postgres:14.25@sha256:c0e9c0e9bac7e4c1834b698217a03ee5c708de30d313c84a506972de0e24b059
 
   mysql:
     image: mysql:8.4.13@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902
